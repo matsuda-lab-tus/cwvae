@@ -6,7 +6,7 @@ import tempfile
 import shutil
 import imageio
 import numpy as np
-# from video_dataset import VideoDataset, load_dataset  # 必要に応じてインポート
+from data_loader import VideoDataset, load_dataset  # 必要に応じてインポート
 
 class TestVideoDataset(unittest.TestCase):
 

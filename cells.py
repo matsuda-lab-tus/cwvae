@@ -1,3 +1,4 @@
+# Prior（事前分布）とPosterior（事後分布）の2つを計算し、それに基づいて状態を更新していくプロセスを表しています。
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

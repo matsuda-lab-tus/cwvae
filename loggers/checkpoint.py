@@ -47,3 +47,7 @@ class Checkpoint:
         epoch = checkpoint['epoch']
         print(f"Checkpoint restored from {restore_path}, starting from epoch {epoch}")
         return epoch
+    
+    def get_last_step(self):
+        # 復元した際に取得したステップを返す
+        return getattr(self, 'start_step', 0)

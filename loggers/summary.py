@@ -77,7 +77,20 @@ class Summary:
             else:
                 print("Warning: 'open_loop_obs_decoded' not found in model_components. GIF summaries will be skipped.")
 
-    def save(self, step, train, model=None, optimizer=None):
+    def add_scalar(self, tag, scalar_value, global_step=None, train=True):
+        """
+        Adds a scalar value to TensorBoard.
+
+        Args:
+            tag (str): データの識別子
+            scalar_value (float or int): 記録する値
+            global_step (int, optional): 記録するステップ
+            train (bool): Trueの場合はトレーニングのログに、Falseの場合は検証のログに記録
+        """
+        writer = self._writer_train if train else self._writer_val
+        writer.add_scalar(tag, scalar_value, global_step)
+
+    def save(self, step, train=True, model=None, optimizer=None):
         """
         Save scalar summaries to TensorBoard.
 

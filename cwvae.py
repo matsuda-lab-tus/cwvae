@@ -13,10 +13,10 @@ class CWVAE(nn.Module):
         state_sizes,
         embed_size,
         obs_embed_size,
-        enc_dense_layers,        # 追加
-        enc_dense_embed_size,    # 追加
-        channels_mult,           # 追加
-        device,                  # 追加
+        enc_dense_layers,
+        enc_dense_embed_size,
+        channels_mult,
+        device,
         cell_type,
         min_stddev,
         mean_only_cell=False,
@@ -33,6 +33,7 @@ class CWVAE(nn.Module):
         self._mean_only_cell = mean_only_cell
         self._reset_states = reset_states
 
+        # エンコーダーとデコーダーの設定
         self.encoder = Encoder(
             levels,
             tmp_abs_factor,
@@ -47,6 +48,7 @@ class CWVAE(nn.Module):
             channels_mult=channels_mult,
         ).to(device)
 
+        # RSSMセルをレベルごとに作成
         self.cells = nn.ModuleList()
         for level in range(self._levels):
             if self._cell_type == 'RSSMCell':
@@ -63,7 +65,7 @@ class CWVAE(nn.Module):
                 raise NotImplementedError(f"Unknown cell type {self._cell_type}")
             self.cells.append(cell)
 
-        # 潜在変数を埋め込み空間に変換する線形層を追加
+        # 潜在変数を埋め込み空間に変換する線形層
         self.stoch_to_embed = nn.Linear(self._state_sizes["stoch"], self._embed_size).to(device)
 
     def init_weights(self, m):
@@ -78,42 +80,47 @@ class CWVAE(nn.Module):
 
     def decode_prior_multistep(self, prior_multistep):
         """
+        デコードを行う関数
         prior_multistep: Tensor of shape [batch, steps, stoch_size]
         Returns: Tensor of shape [batch, steps, channels, height, width]
         """
-        print(f"Input to decode_prior_multistep shape: {prior_multistep.shape}")
+        print(f"[DEBUG] Input to decode_prior_multistep shape: {prior_multistep.shape}")
 
         batch, steps, stoch_size = prior_multistep.shape
-        embed = self.stoch_to_embed(prior_multistep)  # [batch, steps, embed_size]
+        embed = self.stoch_to_embed(prior_multistep)
 
-        # デコーダーに渡す前に3次元にリシェイプする
-        embed = embed.view(batch, steps, 800)  # [batch, steps, embed_size]
-        print(f"Reshaped embed shape: {embed.shape}")
+        # 形状確認
+        print(f"[DEBUG] Embed shape before reshaping: {embed.shape}")
+
+        # リシェイプ
+        embed = embed.view(batch, steps, self._embed_size)
+
+        # 形状確認
+        print(f"[DEBUG] Embed shape after reshaping: {embed.shape}")
 
         # デコード
-        decoded = self.decoder(embed)  # [batch, steps, channels, height, width]
+        decoded = self.decoder(embed)
 
-        print(f"Decoded output shape: {decoded.shape}")
+        # デコード結果の形状確認
+        print(f"[DEBUG] Decoded output shape: {decoded.shape}")
 
         return decoded
-
 
     def hierarchical_unroll(self, inputs, actions=None, use_observations=None, initial_state=None):
         level_top = self._levels - 1
 
-        # initial_state の初期化
+        # 初期状態の設定
         if initial_state is None:
-            initial_state = [None] * self._levels  # Noneの場合、各レベル用の空リストを生成
+            initial_state = [None] * self._levels
 
-        # デバッグのための情報を出力
-        print(f"Level top: {level_top}")
-        print(f"inputs length: {len(inputs)}")
-        
-        # 各レベルの入力を確認
+        # デバッグ用ログ
+        print(f"[DEBUG] Level top: {level_top}")
+        print(f"[DEBUG] Inputs length: {len(inputs)}")
+
         for i, inp in enumerate(inputs):
-            print(f"Level {i} input shape: {inp.shape}")
+            print(f"[DEBUG] Input shape at level {i}: {inp.shape}")
 
-        # レベル数が不足していないか確認
+        # レベル数が不足していないかチェック
         if len(inputs) <= level_top:
             raise IndexError(f"inputs does not have enough levels. Expected at least {level_top + 1}, but got {len(inputs)}")
 
@@ -130,7 +137,7 @@ class CWVAE(nn.Module):
 
         for level in range(level_top, -1, -1):
             obs_inputs = inputs[level]
-            print(f"Input shape in CWVAE level {level}: {obs_inputs.shape}")
+            print(f"[DEBUG] Input shape in CWVAE level {level}: {obs_inputs.shape}")
             if level == level_top:
                 reset_state = torch.ones(obs_inputs.size(0), obs_inputs.size(1), 1).to(obs_inputs.device)
             else:
@@ -140,18 +147,19 @@ class CWVAE(nn.Module):
             if level == 0 and actions is not None:
                 context = torch.cat([context, actions], dim=-1)
 
-            # 初期状態をゼロで初期化
+            # 初期状態の設定
             initial = self.cells[level].zero_state(obs_inputs.size(0), obs_inputs.device)
             if initial_state[level] is not None:
                 initial["sample"] = initial_state[level]["sample"]
                 initial["det_state"] = initial_state[level]["det_state"]
 
+            # manual_scanを呼び出してpriorとposteriorを取得
             prior, posterior, posterior_last_step = manual_scan(
                 self.cells[level],
                 obs_inputs,
                 context,
                 reset_state,
-                use_observations[level] if use_observations is not None else True,  # NoneならTrueを使う
+                use_observations[level] if use_observations is not None else True,
                 initial,
             )
 
@@ -160,6 +168,9 @@ class CWVAE(nn.Module):
 
             prior_list.insert(0, prior)
             posterior_list.insert(0, posterior)
+
+            # デバッグ用のcontextの形状確認
+            print(f"[DEBUG] Context shape at level {level}: {context.shape}")
 
             if level != 0:
                 context = context.unsqueeze(2).expand(-1, -1, self._tmp_abs_factor, -1)
@@ -189,6 +200,8 @@ class CWVAE(nn.Module):
 
         neg_elbo = nll_term + kl_term
         loss = neg_elbo / obs.size(1)
+
+        print(f"[DEBUG] Loss calculated: {loss.item()}")
 
         return {
             "loss": loss,
@@ -237,12 +250,11 @@ def build_model(cfg, open_loop=True):
         channels_mult=cfg.channels_mult,
     ).to(cfg.device)
 
-    # エンコーダの出力が各レベルに対応するようにする
-    obs_encoded_mu, obs_encoded_logvar = encoder(obs)  # Encoderが複数レベルの出力を返すことを確認
-    print(f"Encoded output length: {len(obs_encoded_mu)}")  # デバッグプリント
+    obs_encoded_mu, obs_encoded_logvar = encoder(obs)
+    print(f"[DEBUG] Encoded output length: {len(obs_encoded_mu)}")
 
     for i, enc_mu in enumerate(obs_encoded_mu):
-        print(f"Encoded output at level {i}: {enc_mu.shape}")  # 各レベルの形状を確認
+        print(f"[DEBUG] Encoded output at level {i}: {enc_mu.shape}")
     
     if len(obs_encoded_mu) != cfg.levels:
         raise ValueError(f"Encoder output does not match expected levels. Expected {cfg.levels}, but got {len(obs_encoded_mu)}.")
@@ -263,18 +275,13 @@ def build_model(cfg, open_loop=True):
         reset_states=cfg.cell_reset_state,
     ).to(cfg.device)
 
-    # hierarchical_unrollを呼び出してモデルを展開
     outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_mu)
     obs_decoded = decoder(outputs_bot)
 
-    # 出力の次元を調整
     obs_decoded = obs_decoded.view(cfg.batch_size, cfg.seq_len, cfg.channels, 64, 64)
 
-    # デバッグ用の出力
-    print(f"obs shape: {obs.shape}")
-    print(f"obs_decoded shape: {obs_decoded.shape}")
+    print(f"[DEBUG] obs_decoded shape: {obs_decoded.shape}")
 
-    # compute_losses から返された辞書を展開
     losses = model.compute_losses(
         obs,
         obs_decoded,
@@ -285,13 +292,11 @@ def build_model(cfg, open_loop=True):
         beta=cfg.beta,
     )
 
-    # open_loop_obs_decoded を追加
     if open_loop:
-        # priors[0]["mean"] をデコードして画像に変換
-        prior_multistep_decoded = model.decode_prior_multistep(priors[0]["mean"])  # [batch, steps, channels, height, width]
+        prior_multistep_decoded = model.decode_prior_multistep(priors[0]["mean"])
         open_loop_obs_decoded = {
-            "prior_multistep": prior_multistep_decoded,  # デコードされた prior
-            "gt_multistep": obs_decoded,                # グラウンドトゥルースの観測
+            "prior_multistep": prior_multistep_decoded,
+            "gt_multistep": obs_decoded,
         }
     else:
         open_loop_obs_decoded = None
@@ -311,5 +316,5 @@ def build_model(cfg, open_loop=True):
             "kld_all_levels": losses["kld_all_levels"],
         },
         "meta": {"model": model},
-        "open_loop_obs_decoded": open_loop_obs_decoded,  # 追加
+        "open_loop_obs_decoded": open_loop_obs_decoded,
     }

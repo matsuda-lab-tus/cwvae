@@ -21,21 +21,21 @@ def train_setup(cfg, model):
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr, eps=1e-04)
 
     # deviceをcfgに追加
-    cfg.device = device  # 修正: キーアクセスではなく属性アクセスを使用
+    cfg.device = device
 
     return optimizer, device
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--logdir", default="./logs", type=str, help="ログディレクトリのパス")
-    parser.add_argument("--datadir", default="./minerl_navigate/train", type=str, help="データディレクトリのパス")
+    parser.add_argument("--datadir", default="./minerl_navigate/", type=str, help="データディレクトリのパス")
     parser.add_argument("--config", default="./configs/minerl.yml", type=str, help="設定ファイル（YAML）のパス")
     parser.add_argument("--base-config", default="./configs/base_config.yml", type=str, help="ベース設定ファイルのパス")
     
     args = parser.parse_args()
     cfg = tools.read_configs(args.config, args.base_config, datadir=args.datadir, logdir=args.logdir)
 
-    # デバイスの設定を追加 (ここが新しい部分)
+    # デバイスの設定を追加
     cfg.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 実験のルートディレクトリを作成
@@ -53,6 +53,8 @@ if __name__ == "__main__":
     # モデルを構築
     model_components = build_model(cfg)
     model = model_components["meta"]["model"]
+    encoder = model_components["training"]["encoder"]
+    decoder = model_components["training"]["decoder"]
 
     # トレーニングのセットアップ
     optimizer, device = train_setup(cfg, model)
@@ -85,34 +87,37 @@ if __name__ == "__main__":
             for batch_idx, train_batch in enumerate(train_loader):  # DataLoaderからバッチを取得
                 print(f"Processing training batch {batch_idx + 1}/{len(train_loader)}")
                 train_batch = train_batch.to(device)  # デバイスに送る（GPU or CPU）
+
+                # train_batch のシーケンス長を cfg.seq_len に揃える
+                if train_batch.shape[1] > cfg.seq_len:
+                    train_batch = train_batch[:, :cfg.seq_len]
+
+                # train_batch の次元チェック
+                print(f"train_batch shape after slicing: {train_batch.shape}")
                 
                 optimizer.zero_grad()
                 
+                # エンコーダーを通して特徴量を抽出
+                obs_encoded_mu, obs_encoded_logvar = encoder(train_batch)
+
                 # モデルの出力を取得
-                outputs = model.hierarchical_unroll(train_batch)
-                priors = outputs[2]  # priors を取得
-                posteriors = outputs[3]  # posteriors を取得
-                
-                # `priors` や `posteriors` が Tensor オブジェクトであることを確認
-                if isinstance(priors, list):
-                    priors = priors[0]["mean"]  # 最初のレベルの mean 値を取得
-                if isinstance(posteriors, list):
-                    posteriors = posteriors[0]["mean"]  # 最初のレベルの mean 値を取得
+                outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_mu)
                 
                 # obs_decoded を生成
-                obs_decoded = model.decoder(priors)  # デコード
+                obs_decoded = decoder(outputs_bot)
                 print(f"obs_decoded shape: {obs_decoded.shape}")
                 
                 # 損失の計算
-                loss = model.compute_losses(
+                losses = model.compute_losses(
                     obs=train_batch,
                     obs_decoded=obs_decoded,
-                    priors=outputs[2],
-                    posteriors=outputs[3],
+                    priors=priors,
+                    posteriors=posteriors,
                     dec_stddev=cfg.dec_stddev,
                     free_nats=cfg.free_nats,
                     beta=cfg.beta
-                )["loss"]
+                )
+                loss = losses["loss"]
                 print(f"Loss calculated: {loss.item()}")
                 
                 loss.backward()
@@ -126,7 +131,7 @@ if __name__ == "__main__":
                 # サマリーやモデルの保存
                 if step % cfg.save_scalars_every == 0:
                     train_loss = loss.item()
-                    summary.save_scalar("loss", train_loss, step)
+                    summary.add_scalar("loss", train_loss, step)  # 修正箇所
 
                     # 検証損失の計算
                     model.eval()
@@ -134,11 +139,12 @@ if __name__ == "__main__":
                         val_losses = []
                         for val_batch in val_loader:
                             val_batch = val_batch.to(device)
-                            val_outputs = model.hierarchical_unroll(val_batch)
-                            val_priors = val_outputs[2]
-                            val_posteriors = val_outputs[3]
-                            val_obs_decoded = model.decoder(val_priors[0]["mean"])  # デコード
-                            val_loss = model.compute_losses(
+                            if val_batch.shape[1] > cfg.seq_len:
+                                val_batch = val_batch[:, :cfg.seq_len]
+                            val_obs_encoded_mu, val_obs_encoded_logvar = encoder(val_batch)
+                            val_outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded_mu)
+                            val_obs_decoded = decoder(val_outputs_bot)
+                            val_losses_dict = model.compute_losses(
                                 obs=val_batch,
                                 obs_decoded=val_obs_decoded,
                                 priors=val_priors,
@@ -146,11 +152,12 @@ if __name__ == "__main__":
                                 dec_stddev=cfg.dec_stddev,
                                 free_nats=cfg.free_nats,
                                 beta=cfg.beta
-                            )["loss"].item()
+                            )
+                            val_loss = val_losses_dict["loss"].item()
                             val_losses.append(val_loss)
                             print(f"Validation Loss for current batch: {val_loss}")
                         average_val_loss = sum(val_losses) / len(val_losses)
-                        summary.save_scalar("val_loss", average_val_loss, step)
+                        summary.add_scalar("val_loss", average_val_loss, step)  # 修正箇所
                         model.train()
 
                 # モデルの保存
