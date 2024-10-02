@@ -1,4 +1,3 @@
-
 import yaml
 from pathlib import Path
 import numpy as np
@@ -61,14 +60,28 @@ def validate_config(cfg):
 
 
 def read_configs(config_path, base_config_path=None, **kwargs):
+    class TorchDeviceLoader(yaml.SafeLoader):
+        pass
+
+    def torch_device_constructor(loader, node):
+        sequence = loader.construct_sequence(node)  # シーケンスとしてロード
+        if isinstance(sequence, list) and len(sequence) == 1:
+            return torch.device(sequence[0])
+        else:
+            raise ValueError(f"Invalid sequence format for torch.device: {sequence}")
+
+    # torch.deviceを読み込むためのカスタムタグを登録
+    TorchDeviceLoader.add_constructor('tag:yaml.org,2002:python/object/apply:torch.device', torch_device_constructor)
+
     if base_config_path is not None:
         base_config = yaml.safe_load(Path(base_config_path).read_text())
         config = base_config.copy()
-        config.update(yaml.safe_load(Path(config_path).read_text()))
+        config.update(yaml.load(Path(config_path).read_text(), Loader=TorchDeviceLoader))
         assert len(set(config).difference(base_config)) == 0, "Found new keys in config. Make sure to set them in base_config first."
     else:
         with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
+            config = yaml.load(f, Loader=TorchDeviceLoader)
+
     config = AttrDict(config)
 
     if kwargs.get("datadir", None) is not None:
@@ -107,9 +120,7 @@ def _to_padded_strip(images):
         dtype=np.uint8,
     )
     for i in range(images.shape[0]):
-        result[:, i * y_dim + i * padding : (i + 1) * y_dim + i * padding, :] = images[
-            i
-        ]
+        result[:, i * y_dim + i * padding : (i + 1) * y_dim + i * padding, :] = images[i]
     if result.shape[-1] == 1:
         result = np.reshape(result, result.shape[:2])
     return result

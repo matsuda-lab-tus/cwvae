@@ -4,10 +4,14 @@ import argparse
 import yaml
 from torch.utils.data import DataLoader
 from cwvae import build_model
-from loggers.summary import Summary
 from loggers.checkpoint import Checkpoint
 from data_loader import load_dataset
 import tools
+import wandb
+from datetime import datetime  # 終了時間の取得に使用
+
+# wandbの初期化
+wandb.init(project="CW-VAE", config={"learning_rate": 0.001, "epochs": 600})
 
 def train_setup(cfg, model):
     """
@@ -59,10 +63,6 @@ if __name__ == "__main__":
     # トレーニングのセットアップ
     optimizer, device = train_setup(cfg, model)
 
-    # サマリーを定義
-    summary = Summary(exp_rootdir, save_gifs=cfg.save_gifs)
-    summary.build_summary(cfg, model_components)
-
     # チェックポイントを定義
     checkpoint = Checkpoint(exp_rootdir)
 
@@ -70,8 +70,7 @@ if __name__ == "__main__":
     start_step = 0
     if os.path.exists(checkpoint.log_dir_model):
         print(f"モデルを {checkpoint.log_dir_model} から復元します")
-        checkpoint.restore(model, optimizer)
-        start_step = checkpoint.get_last_step()
+        start_step = checkpoint.restore(model, optimizer)
         print(f"トレーニングをステップ {start_step} から再開します")
     else:
         # モデルのパラメータを初期化
@@ -79,8 +78,9 @@ if __name__ == "__main__":
 
     # トレーニングループ
     print("トレーニングを開始します。")
-
+    start_time = datetime.now()  # トレーニング開始時間
     step = start_step
+
     while step < cfg.max_steps:
         try:
             model.train()
@@ -119,7 +119,10 @@ if __name__ == "__main__":
                 )
                 loss = losses["loss"]
                 print(f"Loss calculated: {loss.item()}")
-                
+
+                # wandbに損失をログ
+                wandb.log({"train_loss": loss.item(), "step": step})
+
                 loss.backward()
                 
                 # 勾配クリッピングの実施（必要な場合）
@@ -128,12 +131,8 @@ if __name__ == "__main__":
                 
                 optimizer.step()
 
-                # サマリーやモデルの保存
+                # 検証損失の計算
                 if step % cfg.save_scalars_every == 0:
-                    train_loss = loss.item()
-                    summary.add_scalar("loss", train_loss, step)  # 修正箇所
-
-                    # 検証損失の計算
                     model.eval()
                     with torch.no_grad():
                         val_losses = []
@@ -157,7 +156,7 @@ if __name__ == "__main__":
                             val_losses.append(val_loss)
                             print(f"Validation Loss for current batch: {val_loss}")
                         average_val_loss = sum(val_losses) / len(val_losses)
-                        summary.add_scalar("val_loss", average_val_loss, step)  # 修正箇所
+                        wandb.log({"val_loss": average_val_loss, "step": step})
                         model.train()
 
                 # モデルの保存
@@ -175,6 +174,12 @@ if __name__ == "__main__":
 
         except Exception as e:
             print(f"トレーニングが {str(e)} により中断されました")
+            wandb.log({"error": str(e)})
             break
 
-    print("トレーニングが完了しました。")
+    # 終了時間をログ
+    end_time = datetime.now()
+    duration = end_time - start_time
+    print(f"トレーニングが完了しました。終了時間: {end_time} | トレーニングにかかった時間: {duration}")
+    wandb.log({"training_duration": str(duration), "end_time": str(end_time)})
+    wandb.finish()
