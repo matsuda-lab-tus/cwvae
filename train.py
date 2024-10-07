@@ -63,23 +63,16 @@ if __name__ == "__main__":
     # トレーニングのセットアップ
     optimizer, device = train_setup(cfg, model)
 
-    # チェックポイントを定義
-    checkpoint = Checkpoint(exp_rootdir)
+    # チェックポイントを定義 (一から学習するように修正)
+    checkpoint = Checkpoint(exp_rootdir)  # ここで定義
 
-    # モデルを復元（存在する場合）
-    start_step = 0
-    if os.path.exists(checkpoint.log_dir_model):
-        print(f"モデルを {checkpoint.log_dir_model} から復元します")
-        start_step = checkpoint.restore(model, optimizer)
-        print(f"トレーニングをステップ {start_step} から再開します")
-    else:
-        # モデルのパラメータを初期化
-        model.apply(model.init_weights)
+    # モデルのパラメータを初期化
+    model.apply(model.init_weights)
 
     # トレーニングループ
     print("トレーニングを開始します。")
     start_time = datetime.now()  # トレーニング開始時間
-    step = start_step
+    step = 0
 
     while step < cfg.max_steps:
         try:
@@ -94,19 +87,28 @@ if __name__ == "__main__":
 
                 # train_batch の次元チェック
                 print(f"train_batch shape after slicing: {train_batch.shape}")
-                
+                        
                 optimizer.zero_grad()
-                
+                        
                 # エンコーダーを通して特徴量を抽出
-                obs_encoded_mu, obs_encoded_logvar = encoder(train_batch)
+                obs_encoded = encoder(train_batch)
+                print(f"[DEBUG] Encoder output type: {type(obs_encoded)}")
+                if isinstance(obs_encoded, (list, tuple)):
+                    for i, enc in enumerate(obs_encoded):
+                        print(f"[DEBUG] Encoder output at level {i}: {enc.shape}")
+                else:
+                    print(f"[DEBUG] Encoder output: {obs_encoded.shape}")
 
                 # モデルの出力を取得
-                outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_mu)
-                
+                outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded)
+                print(f"[DEBUG] outputs_bot shape: {outputs_bot.shape}")
+                print(f"[DEBUG] priors length: {len(priors)}")
+                print(f"[DEBUG] posteriors length: {len(posteriors)}")
+
                 # obs_decoded を生成
                 obs_decoded = decoder(outputs_bot)
                 print(f"obs_decoded shape: {obs_decoded.shape}")
-                
+                        
                 # 損失の計算
                 losses = model.compute_losses(
                     obs=train_batch,
@@ -124,11 +126,11 @@ if __name__ == "__main__":
                 wandb.log({"train_loss": loss.item(), "step": step})
 
                 loss.backward()
-                
+                        
                 # 勾配クリッピングの実施（必要な場合）
                 if cfg.clip_grad_norm_by is not None:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_grad_norm_by)
-                
+                        
                 optimizer.step()
 
                 # 検証損失の計算
@@ -140,9 +142,17 @@ if __name__ == "__main__":
                             val_batch = val_batch.to(device)
                             if val_batch.shape[1] > cfg.seq_len:
                                 val_batch = val_batch[:, :cfg.seq_len]
-                            val_obs_encoded_mu, val_obs_encoded_logvar = encoder(val_batch)
-                            val_outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded_mu)
+                            val_obs_encoded = encoder(val_batch)
+                            print(f"[DEBUG] Validation encoder output type: {type(val_obs_encoded)}")
+                            if isinstance(val_obs_encoded, (list, tuple)):
+                                for i, enc in enumerate(val_obs_encoded):
+                                    print(f"[DEBUG] Validation encoder output at level {i}: {enc.shape}")
+                            else:
+                                print(f"[DEBUG] Validation encoder output: {val_obs_encoded.shape}")
+
+                            val_outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded)
                             val_obs_decoded = decoder(val_outputs_bot)
+                            print(f"Validation obs_decoded shape: {val_obs_decoded.shape}")
                             val_losses_dict = model.compute_losses(
                                 obs=val_batch,
                                 obs_decoded=val_obs_decoded,
