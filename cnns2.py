@@ -53,7 +53,7 @@ class Encoder(nn.Module):
         hidden = self.activation(self.conv4(hidden))
 
         # 畳み込み層の出力形状を確認
-        hidden = hidden.view(batch_size, timesteps, -1)  # Shape: (batch_size, timesteps, feature_dim)
+        hidden = hidden.reshape(batch_size, timesteps, -1)  # Shape: (batch_size, timesteps, feature_dim)
         layer = hidden
 
         layers = []
@@ -91,9 +91,6 @@ class Encoder(nn.Module):
 
         return layers
 
-import torch
-import torch.nn as nn
-
 class Decoder(nn.Module):
     def __init__(self, output_channels, embed_size, channels_mult=1):
         super(Decoder, self).__init__()
@@ -114,14 +111,45 @@ class Decoder(nn.Module):
     
     def forward(self, x):
         batch_size, timesteps, embed_size = x.size()
+        print(f"[DEBUG] Input to Decoder: {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # fc層に入力するためのデータ形状を確認
         x = x.view(batch_size * timesteps, embed_size)  # [B*T, embed_size]
+        print(f"[DEBUG] After reshaping for fc layer: {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # fc層を通過
         x = self.activation(self.fc(x))  # [B*T, 512*4*4]
+        print(f"[DEBUG] After fc: {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # 4x4の形状に変換
         x = x.view(batch_size * timesteps, 512, 4, 4)  # [B*T, 512, 4, 4]
+        print(f"[DEBUG] After reshaping to 4x4: {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # deconv1層を通過（4x4 -> 8x8）
         x = self.activation(self.deconv1(x))  # [B*T, 256, 8, 8]
+        print(f"[DEBUG] After deconv1 (8x8): {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # deconv2層を通過（8x8 -> 16x16）
         x = self.activation(self.deconv2(x))  # [B*T, 128, 16, 16]
+        print(f"[DEBUG] After deconv2 (16x16): {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # deconv3層を通過（16x16 -> 32x32）
         x = self.activation(self.deconv3(x))  # [B*T, 64, 32, 32]
+        print(f"[DEBUG] After deconv3 (32x32): {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # deconv4層を通過（32x32 -> 64x64）
         x = self.activation(self.deconv4(x))  # [B*T, 32, 64, 64]
-        x = self.deconv5(x)  # [B*T, 3, 64, 64]
-        x = self.final_activation(x)  # [B*T, 3, 64, 64]
-        x = x.view(batch_size, timesteps, self.output_channels, 64, 64)  # [B, T, 3, 64, 64]
+        print(f"[DEBUG] After deconv4 (64x64): {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # deconv5層を通過（64x64 -> 64x64）
+        x = self.deconv5(x)  # [B*T, output_channels, 64, 64]
+        print(f"[DEBUG] After deconv5 (final layer): {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # 最終活性化関数を適用（Sigmoidで出力を0〜1にスケール）
+        x = self.final_activation(x)
+        print(f"[DEBUG] After final activation (Sigmoid): {x.shape}, min: {x.min()}, max: {x.max()}")
+
+        # 最終的な出力の形状を [batch_size, timesteps, output_channels, 64, 64] に変換
+        x = x.view(batch_size, timesteps, self.output_channels, 64, 64)  # [B, T, output_channels, 64, 64]
+        print(f"[DEBUG] Final output shape: {x.shape}, min: {x.min()}, max: {x.max()}")
         return x

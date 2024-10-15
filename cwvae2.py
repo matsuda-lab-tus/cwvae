@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.distributions as dist
-from cnns import Encoder, Decoder
+from cnns2 import Encoder, Decoder
 from cells import RSSMCell
 import math
 
