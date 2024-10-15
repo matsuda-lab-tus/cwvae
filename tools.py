@@ -3,13 +3,16 @@ from pathlib import Path
 import numpy as np
 import imageio
 import os
-from skimage.metrics import peak_signal_noise_ratio as psnr_metric
-from skimage.metrics import structural_similarity as ssim_metric
 import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torch.autograd import Variable
-
+import skimage
+import matplotlib.pyplot as plt
+import os
+import skimage
+from skimage.metrics import structural_similarity as ssim_metric
+from skimage.metrics import peak_signal_noise_ratio as psnr_metric
 
 class AttrDict(dict):
     __setattr__ = dict.__setitem__
@@ -126,51 +129,94 @@ def _to_padded_strip(images):
     return result
 
 
-def save_as_grid(images, save_dir, filename, strip_width=50):
-    results = []
-    if images.shape[0] < strip_width:
-        results.append(_to_padded_strip(images))
-    else:
-        for i in range(0, images.shape[0], strip_width):
-            results.append(_to_padded_strip(images[i : i + strip_width]))
-    grid = np.concatenate(results, axis=0)
-    imageio.imwrite(os.path.join(save_dir, filename), grid)
-    print(f"Written grid file {os.path.join(save_dir, filename)}")
 
+from skimage.metrics import structural_similarity as ssim_metric
+from skimage.metrics import peak_signal_noise_ratio as psnr_metric
+import numpy as np
 
 def compute_metrics(gt, pred):
-    gt = np.transpose(gt, [0, 1, 4, 2, 3])
-    pred = np.transpose(pred, [0, 1, 4, 2, 3])
-    bs = gt.shape[0]
-    T = gt[0].shape[0]
+    """
+    SSIMおよびPSNRを計算する関数。
+    
+    Args:
+    gt (np.ndarray): グラウンドトゥルース画像 (batch_size, seq_len, channels, height, width)
+    pred (np.ndarray): 予測画像 (batch_size, seq_len, channels, height, width)
+    
+    Returns:
+    np.ndarray, np.ndarray: 各バッチおよび各時刻に対するSSIMとPSNRの配列
+    """
+    # gt と pred の形状を確認
+    print(f"[DEBUG] gt shape: {gt.shape}")
+    print(f"[DEBUG] pred shape: {pred.shape}")
+
+    # GTと予測の形状が異なる場合、修正する
+    if gt.shape[0] == 1:  # バッチサイズが1の場合、1次元を削除して形状を揃える
+        gt = gt.squeeze(0)
+    
+    if gt.shape != pred.shape:
+        raise ValueError(f"GT and Pred shapes do not match. GT shape: {gt.shape}, Pred shape: {pred.shape}")
+
+    # バッチサイズとシーケンス長を取得
+    bs = pred.shape[0]  # batch_size
+    T = pred.shape[1]   # seq_len
+
+    # SSIMとPSNRを格納する配列を初期化
     ssim = np.zeros((bs, T))
     psnr = np.zeros((bs, T))
+
+    # 各バッチおよび各時刻に対してメトリクスを計算
     for i in range(bs):
         for t in range(T):
-            for c in range(gt[i][t].shape[0]):
-                ssim[i, t] += ssim_metric(gt[i][t][c], pred[i][t][c])
-                psnr[i, t] += psnr_metric(gt[i][t][c], pred[i][t][c])
-            ssim[i, t] /= gt[i][t].shape[0]
-            psnr[i, t] /= gt[i][t].shape[0]
+            # SSIMとPSNRを計算（各フレームについて1回計算する）
+            ssim[i, t] = ssim_metric(gt[i, t], pred[i, t], multichannel=True, data_range=gt[i, t].max() - gt[i, t].min())
+            psnr[i, t] = psnr_metric(gt[i, t], pred[i, t], data_range=gt[i, t].max() - gt[i, t].min())
 
     return ssim, psnr
 
-
-def plot_metrics(metrics, logdir, name):
-    mean_metric = np.squeeze(np.mean(metrics, axis=0))
-    stddev_metric = np.squeeze(np.std(metrics, axis=0))
-    np.savez(os.path.join(logdir, f"{name}_mean.npz"), mean_metric)
-    np.savez(os.path.join(logdir, f"{name}_stddev.npz"), stddev_metric)
-
+def plot_metrics(mean_metric, std_metric, logdir, metric_name):
+    x = np.arange(len(mean_metric))
     plt.figure()
-    axes = plt.gca()
-    axes.yaxis.grid(True)
-    plt.plot(mean_metric, color="blue")
-    axes.fill_between(
-        np.arange(0, mean_metric.shape[0]),
-        mean_metric - stddev_metric,
-        mean_metric + stddev_metric,
-        color="blue",
-        alpha=0.4,
-    )
-    plt.savefig(os.path.join(logdir, f"{name}_range.png"))
+    plt.plot(x, mean_metric, label=f"Mean {metric_name.upper()}")
+    plt.fill_between(x, mean_metric - std_metric, mean_metric + std_metric, alpha=0.2)
+    plt.xlabel("Time Step")
+    plt.ylabel(metric_name.upper())
+    plt.title(f"{metric_name.upper()} over Time")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(logdir, f"{metric_name}.png"))
+    plt.close()
+
+def save_as_grid(images, path, filename, nrow=8):
+    from torchvision.utils import save_image
+    import torch
+
+    # データ形式の確認と正規化
+    if isinstance(images, np.ndarray):
+        # NumPy配列をPyTorchテンソルに変換し、範囲を0～1に正規化
+        images = torch.from_numpy(images).float() / 255.0
+    elif isinstance(images, torch.Tensor):
+        # PyTorchテンソルがすでに渡されている場合、範囲を0～1に正規化
+        images = images.float() / 255.0
+    else:
+        raise TypeError(f"Unsupported type for images: {type(images)}")
+
+    # テンソルの形状確認: [T, C, H, W] かどうかを確認し、次元を補完
+    if images.ndimension() == 3:
+        images = images.unsqueeze(0)  # [C, H, W] -> [1, C, H, W]
+    
+    # デバッグ用に画像データの範囲を確認
+    print(f"[DEBUG] save_as_grid - images shape: {images.shape}, min: {images.min().item()}, max: {images.max().item()}")
+
+    # 保存先パスの確認
+    save_path = os.path.join(path, filename)
+    print(f"[DEBUG] Saving image grid to: {save_path}")
+
+    # 画像の保存
+    try:
+        # 画像をグリッド形式で保存
+        save_image(images, save_path, nrow=nrow)
+        print(f"[INFO] Image grid saved successfully to: {save_path}")
+    except Exception as e:
+        print(f"[ERROR] Failed to save image grid to {save_path}: {e}")
+        import traceback
+        traceback.print_exc()

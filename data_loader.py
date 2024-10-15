@@ -3,6 +3,9 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import imageio
 import numpy as np
+from PIL import Image  # 追加
+from torchvision import transforms
+
 
 class VideoDataset(Dataset):
     def __init__(self, video_dir, transform=None):
@@ -30,60 +33,67 @@ class VideoDataset(Dataset):
         video_path = self.video_files[idx]
         
         # 動画ファイルを読み込み
-        video = self._load_video(video_path)
+        video = self._load_video(video_path)  # [time, height, width, channels]
 
-        # 必要ならばtransformを適用
-        if self.transform:
-            video = self.transform(video)
+        # フレームごとに transform を適用
+        frames = []
+        for frame in video:
+            # numpy.ndarray を PIL.Image に変換
+            frame = Image.fromarray(frame)
+            if self.transform:
+                frame = self.transform(frame)
+            else:
+                # transform がない場合でもテンソルに変換
+                frame = transforms.ToTensor()(frame)
+            frames.append(frame)
 
-        return video
+        # フレームをスタックして [time, channels, height, width] のテンソルに
+        video_tensor = torch.stack(frames)  # [time, channels, height, width]
+
+        return video_tensor
 
     def _load_video(self, video_path):
         """
-        動画ファイルを読み込み、テンソルに変換する。
+        動画ファイルを読み込み、numpy.ndarray に変換する。
 
         Args:
             video_path (str): 動画ファイルのパス
 
         Returns:
-            torch.Tensor: 正規化された動画データテンソル (time, channels, height, width)
+            numpy.ndarray: 動画データ (time, height, width, channels)
         """
         reader = imageio.get_reader(video_path, 'ffmpeg')
         frames = [frame for frame in reader]
+        reader.close()
         
         # 動画を (time, height, width, channels) の形で取得
         video = np.stack(frames, axis=0)
-        video = torch.tensor(video, dtype=torch.float32)
-
-        # ピクセル値を 0-1 に正規化
-        video /= 255.0
-
-        # (time, channels, height, width) に次元を変更
-        video = video.permute(0, 3, 1, 2)
-
         return video
 
-def load_dataset(cfg, transform=None):
+
+def load_dataset(datadir, batch_size, transform=None):
     """
     動画データセットをロードし、DataLoaderを返す。
 
     Args:
-        cfg (dict): 設定情報
+        datadir (str): データディレクトリのパス
+        batch_size (int): バッチサイズ
         transform (callable, optional): データに適用するトランスフォーム
 
     Returns:
-        train_loader, val_loader: トレーニングデータと検証データのDataLoader
+        train_loader, test_loader: トレーニングデータとテストデータのDataLoader
     """
     # トレーニングとテストのディレクトリを設定
-    train_dir = os.path.join(cfg.datadir, 'train')  # トレーニング用ディレクトリ
-    test_dir = os.path.join(cfg.datadir, 'test')    # テスト用ディレクトリ
+    train_dir = os.path.join(datadir, 'train')  # トレーニング用ディレクトリ
+    test_dir = os.path.join(datadir, 'test')    # テスト用ディレクトリ
 
     # データセットの作成
     train_dataset = VideoDataset(video_dir=train_dir, transform=transform)
     test_dataset = VideoDataset(video_dir=test_dir, transform=transform)
 
     # DataLoaderの作成
-    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     return train_loader, test_loader
+

@@ -45,8 +45,9 @@ class CWVAE(nn.Module):
 
         self.decoder = Decoder(
             output_channels=3,
-            embed_size=enc_dense_embed_size,
+            embed_size=self._state_sizes["deter"],  # self._state_sizes["deter"] は 800
             channels_mult=channels_mult,
+            final_activation=nn.Tanh(),
         ).to(device)
 
         # RSSMセルをレベルごとに作成し、デバイスに移動
@@ -116,16 +117,15 @@ class CWVAE(nn.Module):
     def hierarchical_unroll(self, inputs, actions=None, use_observations=None, initial_state=None):
         level_top = self._levels - 1
 
-        # 初期状態の設定
         if initial_state is None:
             initial_state = [None] * self._levels
 
-        # contextの初期化
         context = torch.zeros(
             inputs[level_top].size(0),
             inputs[level_top].size(1),
-            self.cells[-1]._detstate_size
-        ).to(inputs[level_top].device)
+            self.cells[-1]._detstate_size,
+            device=inputs[level_top].device
+        )
 
         prior_list = []
         posterior_list = []
@@ -136,26 +136,18 @@ class CWVAE(nn.Module):
             print(f"[DEBUG] Input shape in CWVAE level {level}: {obs_inputs.shape}")
 
             if level == level_top:
-                reset_state = torch.ones(obs_inputs.size(0), obs_inputs.size(1), 1).to(obs_inputs.device)
+                reset_state = torch.ones(obs_inputs.size(0), obs_inputs.size(1), 1, device=obs_inputs.device)
             else:
                 reset_state = reset_state.repeat(1, self._tmp_abs_factor, 1)
 
             expected_seq_len = obs_inputs.size(1)
             actual_context_len = context.size(1)
 
-            # コンテキストを繰り返して期待されるシーケンス長を満たす
+            # 必要に応じて context を繰り返してシーケンス長を合わせる
             if actual_context_len < expected_seq_len:
-                repeats = math.ceil(expected_seq_len / actual_context_len)
+                repeats = (expected_seq_len + actual_context_len - 1) // actual_context_len
                 context = context.repeat(1, repeats, 1)
-                context = context[:, :expected_seq_len, :]
-                actual_context_len = context.size(1)
-                print(f"[DEBUG] Context repeated {repeats} times to match expected_seq_len")
 
-            # シーケンス長のチェック
-            if actual_context_len < expected_seq_len:
-                raise IndexError(f"Context sequence length {actual_context_len} is less than expected {expected_seq_len} at level {level}")
-
-            # 必要に応じてコンテキストをスライス
             context = context[:, :expected_seq_len, :]
             print(f"[DEBUG] Context shape after slicing: {context.shape}")
 
@@ -163,14 +155,14 @@ class CWVAE(nn.Module):
                 context = torch.cat([context, actions], dim=-1)
                 print(f"[DEBUG] Actions concatenated to context. New context shape: {context.shape}")
 
-            # 初期状態の設定
             initial = self.cells[level].zero_state(obs_inputs.size(0), obs_inputs.device)
             if initial_state[level] is not None:
-                initial["sample"] = initial_state[level]["sample"]
-                initial["det_state"] = initial_state[level]["det_state"]
+                initial = initial_state[level]
                 print(f"[DEBUG] Initial state set from initial_state for level {level}")
 
-            # `manual_scan` を呼び出して prior と posterior を取得
+            # manual_scan 関数を呼び出す前に obs_inputs の次元を確認
+            print(f"[DEBUG] obs_inputs shape before manual_scan at level {level}: {obs_inputs.shape}")
+
             prior, posterior, posterior_last_step = manual_scan(
                 self.cells[level],
                 obs_inputs,
@@ -187,16 +179,12 @@ class CWVAE(nn.Module):
             prior_list.insert(0, prior)
             posterior_list.insert(0, posterior)
 
-            # デバッグ用の context の形状確認
             print(f"[DEBUG] Context shape at level {level}: {context.shape}")
-
-            if level != 0:
-                # コンテキストの繰り返しを適切に行う（すでに繰り返し済み）
-                pass
 
         output_bot_level = context
         print(f"[DEBUG] hierarchical_unroll output_bot_level shape: {output_bot_level.shape}")
         return output_bot_level, last_state_all_levels, prior_list, posterior_list
+
 
     def _gaussian_KLD(self, dist1, dist2):
         mvn1 = dist.Normal(dist1["mean"], dist1["stddev"])
@@ -357,3 +345,4 @@ def build_model(cfg, open_loop=True):
         "meta": {"model": model},
         "open_loop_obs_decoded": open_loop_obs_decoded,
     }
+
