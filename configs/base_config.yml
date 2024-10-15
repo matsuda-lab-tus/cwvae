@@ -30,7 +30,7 @@ kl_grad_post_perc: null
 free_nats: null
 beta: null
 clip_grad_norm_by: 10000
-max_steps: 600000 
+# max_steps: 600000 
 
 # SUMMARIES
 logdir: null
