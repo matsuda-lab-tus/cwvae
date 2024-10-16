@@ -15,7 +15,7 @@ class Encoder(nn.Module):
         self.embed_size = embed_size
 
         # Define convolutional layers
-        filters = 8  # The number of output filters starts with 8 and scales
+        filters = 32  
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=channels_mult * filters, kernel_size=4, stride=2, padding=1)
         self.conv2 = nn.Conv2d(in_channels=channels_mult * filters, out_channels=channels_mult * filters * 2, kernel_size=4, stride=2, padding=1)
         self.conv3 = nn.Conv2d(in_channels=channels_mult * filters * 2, out_channels=channels_mult * filters * 4, kernel_size=4, stride=2, padding=1)
@@ -89,15 +89,18 @@ class Decoder(nn.Module):
         self.output_channels = output_channels
         self.channels_mult = channels_mult
 
-        # Add more upsampling layers to match original 64x64 image size
-        self.fc = nn.Linear(self.embed_size, 512 * 4 * 4)
-        self.deconv1 = nn.ConvTranspose2d(512, 256, kernel_size=4, stride=2, padding=1)
-        self.deconv2 = nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1)
-        self.deconv3 = nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1)
-        self.deconv4 = nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1)
-        self.deconv5 = nn.ConvTranspose2d(32, output_channels, kernel_size=3, stride=1, padding=1)
+        # 全結合層で1024次元に変換
+        self.fc = nn.Linear(self.embed_size, channels_mult * 1024)
 
-        self.activation = nn.ReLU()
+        # 逆畳み込み層（TensorFlow版に合わせてフィルター数を調整）
+        filters = 32
+        self.deconv1 = nn.ConvTranspose2d(channels_mult * filters * 4, channels_mult * filters * 4, kernel_size=5, stride=2, padding=1)
+        self.deconv2 = nn.ConvTranspose2d(channels_mult * filters * 4, channels_mult * filters * 2, kernel_size=5, stride=2, padding=1)
+        self.deconv3 = nn.ConvTranspose2d(channels_mult * filters * 2, channels_mult * filters, kernel_size=6, stride=2, padding=1)
+        self.deconv4 = nn.ConvTranspose2d(channels_mult * filters, channels_mult * filters // 2, kernel_size=6, stride=2, padding=1)
+        self.deconv5 = nn.ConvTranspose2d(channels_mult * filters // 2, output_channels, kernel_size=6, stride=2, padding=1)
+
+        self.activation = nn.LeakyReLU(negative_slope=0.01)
 
         if final_activation is not None:
             self.final_activation = final_activation
