@@ -347,3 +347,4 @@ def build_model(cfg, open_loop=True):
         "meta": {"model": model},
         "open_loop_obs_decoded": open_loop_obs_decoded,
     }
+

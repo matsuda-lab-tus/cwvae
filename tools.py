@@ -7,30 +7,37 @@ import matplotlib.pyplot as plt
 import torch
 from torch import nn
 from torch.autograd import Variable
-import skimage
-import matplotlib.pyplot as plt
-import os
-import skimage
 from skimage.metrics import structural_similarity as ssim_metric
 from skimage.metrics import peak_signal_noise_ratio as psnr_metric
+from torchvision.utils import save_image
 
 class AttrDict(dict):
+    """
+    A dictionary class that allows attribute-style access to dictionary keys.
+    """
     __setattr__ = dict.__setitem__
     __getattr__ = dict.__getitem__
 
-
 class Module(nn.Module):
+    """
+    A custom PyTorch module to lazily instantiate layers and cache them for reuse.
+    """
     def __init__(self):
         super().__init__()
         self._modules = {}
 
     def get(self, name, PyTorch_layer, *args, **kwargs):
+        """
+        Retrieves a cached layer or creates it if it does not exist.
+        """
         if name not in self._modules:
             self._modules[name] = PyTorch_layer(*args, **kwargs)
         return self._modules[name]
 
-
 class Step:
+    """
+    A simple step counter to keep track of iterations.
+    """
     def __init__(self):
         self._step = nn.Parameter(torch.tensor(0), requires_grad=False)
 
@@ -40,8 +47,10 @@ class Step:
     def __call__(self):
         return self._step.item()
 
-
 def exp_name(cfg, model_dir_prefix=None):
+    """
+    Generates an experiment name based on the configuration.
+    """
     exp_name = f"{cfg.dataset}_cwvae_{cfg.cell_type.lower()}"
     exp_name += f"_{cfg.levels}l_f{cfg.tmp_abs_factor}"
     exp_name += f"_decsd{cfg.dec_stddev}"
@@ -50,30 +59,31 @@ def exp_name(cfg, model_dir_prefix=None):
     exp_name += f"_seq{cfg.seq_len}_lr{cfg.lr}_bs{cfg.batch_size}"
     return exp_name
 
-
 def validate_config(cfg):
-    assert (
-        cfg.channels is not None and cfg.channels > 0
-    ), f"Incompatible channels = {cfg.channels} found in config."
-    assert (
-        cfg.open_loop_ctx % (cfg.tmp_abs_factor ** (cfg.levels - 1)) == 0
-    ), f"Incompatible open-loop context length {cfg.open_loop_ctx} and temporal abstraction factor {cfg.tmp_abs_factor} for levels {cfg.levels}"
+    """
+    Validates the configuration to ensure compatibility and integrity.
+    """
+    assert cfg.channels is not None and cfg.channels > 0, f"Incompatible channels = {cfg.channels} found in config."
+    assert cfg.open_loop_ctx % (cfg.tmp_abs_factor ** (cfg.levels - 1)) == 0, \
+        f"Incompatible open-loop context length {cfg.open_loop_ctx} and temporal abstraction factor {cfg.tmp_abs_factor} for levels {cfg.levels}"
     assert cfg.datadir is not None, "data root directory cannot be None."
     assert cfg.logdir is not None, "log root directory cannot be None."
 
-
 def read_configs(config_path, base_config_path=None, **kwargs):
+    """
+    Reads and parses the configuration files (YAML format) and returns a configuration dictionary.
+    """
     class TorchDeviceLoader(yaml.SafeLoader):
         pass
 
     def torch_device_constructor(loader, node):
-        sequence = loader.construct_sequence(node)  # シーケンスとしてロード
+        sequence = loader.construct_sequence(node)
         if isinstance(sequence, list) and len(sequence) == 1:
             return torch.device(sequence[0])
         else:
             raise ValueError(f"Invalid sequence format for torch.device: {sequence}")
 
-    # torch.deviceを読み込むためのカスタムタグを登録
+    # Register custom tag to read torch.device from YAML
     TorchDeviceLoader.add_constructor('tag:yaml.org,2002:python/object/apply:torch.device', torch_device_constructor)
 
     if base_config_path is not None:
@@ -95,25 +105,29 @@ def read_configs(config_path, base_config_path=None, **kwargs):
     validate_config(config)
     return config
 
-
 def scan(cell, inputs, use_obs, initial):
+    """
+    Scans through the input sequence and applies the RNN cell at each time step.
+    """
     assert initial is not None, "initial cannot be None. Pass zero_state instead."
     
     outputs = []
     state = initial
 
-    for t in range(inputs.size(1)):  # (B, T, ...)
+    for t in range(inputs.size(1)):  # Iterate over the sequence length
         inp_t = inputs[:, t]  # Extract input at time step t
         out, state = cell(state, inp_t, use_obs=use_obs)
         outputs.append(out)
 
-    outputs = torch.stack(outputs, dim=1)  # Stack back to (B, T, ...)
+    outputs = torch.stack(outputs, dim=1)  # Stack the outputs back to (B, T, ...)
     return outputs, state
 
-
 def _to_padded_strip(images):
+    """
+    Converts a sequence of images into a single padded strip.
+    """
     if len(images.shape) <= 3:
-        images = np.expand_dims(images, -1)
+        images = np.expand_dims(images, -1)  # Add channel dimension if not present
     c_dim = images.shape[-1]
     x_dim = images.shape[-3]
     y_dim = images.shape[-2]
@@ -125,14 +139,8 @@ def _to_padded_strip(images):
     for i in range(images.shape[0]):
         result[:, i * y_dim + i * padding : (i + 1) * y_dim + i * padding, :] = images[i]
     if result.shape[-1] == 1:
-        result = np.reshape(result, result.shape[:2])
+        result = np.reshape(result, result.shape[:2])  # Remove channel dimension if grayscale
     return result
-
-
-
-from skimage.metrics import structural_similarity as ssim_metric
-from skimage.metrics import peak_signal_noise_ratio as psnr_metric
-import numpy as np
 
 def compute_metrics(gt, pred):
     """
@@ -150,11 +158,15 @@ def compute_metrics(gt, pred):
     print(f"[DEBUG] pred shape: {pred.shape}")
 
     # GTと予測の形状が異なる場合、修正する
-    if gt.shape[0] == 1:  # バッチサイズが1の場合、1次元を削除して形状を揃える
-        gt = gt.squeeze(0)
-    
     if gt.shape != pred.shape:
-        raise ValueError(f"GT and Pred shapes do not match. GT shape: {gt.shape}, Pred shape: {pred.shape}")
+        # バッチ次元が異なる場合、GTの形状をPredに合わせる
+        if gt.shape[0] != pred.shape[0]:
+            if gt.shape[0] == 64 and pred.shape[0] == 1:
+                gt = np.expand_dims(gt, axis=0)
+            elif gt.shape[0] == 1 and pred.shape[0] == 64:
+                pred = np.squeeze(pred, axis=0)
+            else:
+                raise ValueError(f"Unexpected batch size mismatch. GT shape: {gt.shape}, Pred shape: {pred.shape}")
 
     # バッチサイズとシーケンス長を取得
     bs = pred.shape[0]  # batch_size
@@ -174,6 +186,9 @@ def compute_metrics(gt, pred):
     return ssim, psnr
 
 def plot_metrics(mean_metric, std_metric, logdir, metric_name):
+    """
+    Plots the mean and standard deviation of the given metrics over time.
+    """
     x = np.arange(len(mean_metric))
     plt.figure()
     plt.plot(x, mean_metric, label=f"Mean {metric_name.upper()}")
@@ -187,33 +202,25 @@ def plot_metrics(mean_metric, std_metric, logdir, metric_name):
     plt.close()
 
 def save_as_grid(images, path, filename, nrow=8):
-    from torchvision.utils import save_image
-    import torch
-
-    # データ形式の確認と正規化
+    """
+    Saves a batch of images as a grid.
+    """
     if isinstance(images, np.ndarray):
-        # NumPy配列をPyTorchテンソルに変換し、範囲を0～1に正規化
-        images = torch.from_numpy(images).float() / 255.0
+        images = torch.from_numpy(images).float() / 255.0  # Convert NumPy array to PyTorch tensor and normalize
     elif isinstance(images, torch.Tensor):
-        # PyTorchテンソルがすでに渡されている場合、範囲を0～1に正規化
         images = images.float() / 255.0
     else:
         raise TypeError(f"Unsupported type for images: {type(images)}")
 
-    # テンソルの形状確認: [T, C, H, W] かどうかを確認し、次元を補完
     if images.ndimension() == 3:
-        images = images.unsqueeze(0)  # [C, H, W] -> [1, C, H, W]
+        images = images.unsqueeze(0)  # Add batch dimension if needed
     
-    # デバッグ用に画像データの範囲を確認
     print(f"[DEBUG] save_as_grid - images shape: {images.shape}, min: {images.min().item()}, max: {images.max().item()}")
 
-    # 保存先パスの確認
     save_path = os.path.join(path, filename)
     print(f"[DEBUG] Saving image grid to: {save_path}")
 
-    # 画像の保存
     try:
-        # 画像をグリッド形式で保存
         save_image(images, save_path, nrow=nrow)
         print(f"[INFO] Image grid saved successfully to: {save_path}")
     except Exception as e:

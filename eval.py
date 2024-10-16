@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 import numpy as np
 from cwvae import build_model
-from data_loader2 import VideoDataset2  # 新しいデータローダーを使用
+from data_loader import VideoDataset # 新しいデータローダーを使用
 import tools
 from loggers.checkpoint import Checkpoint
 import torch
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 def load_new_dataset(datadir, batch_size, eval_seq_len):
     # 新しいデータセットをロードする関数
-    dataset = VideoDataset2(datadir)
+    dataset = VideoDataset(datadir)
     data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
     return data_loader
 
@@ -20,7 +20,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--logdir",
-        default="logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.4_enchl3_ences800_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/model_0_20241015_151917",
+        default="logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.4_enchl3_ences800_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/model_230000",
+        # model_230000
+        # model_0_20241015_151917
+        # logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.1_enchl3_ences1000_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/checkpoints
         type=str,
         help="モデルのチェックポイントが保存されているディレクトリのパス（configは親ディレクトリに存在）",
     )
@@ -30,7 +33,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval-seq-len", default=100, type=int, help="評価シーケンスの総長"
     )
-    parser.add_argument("--datadir", default="./output2/test/intended", type=str, help="新しいデータセットのパス")
+    parser.add_argument("--datadir", default="./minerl_navigate/", type=str, help="新しいデータセットのパス")
     parser.add_argument(
         "--num-samples", default=1, type=int, help="各サンプルに対して生成する予測サンプルの数"
     )

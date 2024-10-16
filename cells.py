@@ -10,7 +10,7 @@ class RSSMCell(nn.Module):
         embed_size,
         obs_embed_size,  # 追加された引数
         reset_states=False,
-        min_stddev=0.1,
+        min_stddev=0.0001,
         mean_only=False,
     ):
         super(RSSMCell, self).__init__()
