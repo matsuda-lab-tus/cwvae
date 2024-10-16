@@ -203,6 +203,12 @@ if __name__ == "__main__":
         # x軸をシーケンス長に対応させる
         x = np.arange(len(mean_ssim))
 
+        # mean_ssimとstd_ssimが1次元になるように確認
+        mean_ssim = np.squeeze(mean_ssim)
+        std_ssim = np.squeeze(std_ssim)
+        mean_psnr = np.squeeze(mean_psnr)
+        std_psnr = np.squeeze(std_psnr)
+
         # SSIMのプロット
         plt.fill_between(x, mean_ssim - std_ssim, mean_ssim + std_ssim, alpha=0.2)
         plt.plot(x, mean_ssim, label="SSIM", color="blue")
