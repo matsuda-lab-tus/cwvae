@@ -4,26 +4,18 @@ import os
 from datetime import datetime
 import numpy as np
 from cwvae import build_model
-from data_loader import VideoDataset # 新しいデータローダーを使用
+from data_loader import VideoDataset  # 新しいデータローダーを使用
 import tools
 from loggers.checkpoint import Checkpoint
 import torch
 import matplotlib.pyplot as plt
-
-def load_new_dataset(datadir, batch_size, eval_seq_len):
-    # 新しいデータセットをロードする関数
-    dataset = VideoDataset(datadir)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    return data_loader
+from data_loader import load_dataset
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--logdir",
         default="logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.4_enchl3_ences800_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/model_230000",
-        # model_230000
-        # model_0_20241015_151917
-        # logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.1_enchl3_ences1000_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/checkpoints
         type=str,
         help="モデルのチェックポイントが保存されているディレクトリのパス（configは親ディレクトリに存在）",
     )
@@ -67,8 +59,8 @@ if __name__ == "__main__":
     if args.datadir:
         cfg.datadir = args.datadir
 
-    # 新しいデータセットをロード
-    val_loader = load_new_dataset(args.datadir, cfg.batch_size, cfg.eval_seq_len)
+    # データセットのロード（train_loader, test_loaderを返す）
+    train_loader, test_loader = load_dataset(args.datadir, cfg.batch_size)
 
     # デバイスの設定（GPUが使えるか確認）
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -96,12 +88,18 @@ if __name__ == "__main__":
 
     model.eval()  # モデルを評価モードに設定
     with torch.no_grad():
-        for i_ex, gts_tensor in enumerate(val_loader):
+        for i_ex, data in enumerate(test_loader):  # test_loaderを使用
             if i_ex >= args.num_examples:
                 break
             try:
                 # データをデバイスに送る
-                gts_tensor = gts_tensor.to(device)
+                if isinstance(data, (tuple, list)):
+                    gts_tensor = data[0].to(device)  # データがタプルまたはリストの場合、最初の要素を使用
+                elif isinstance(data, torch.Tensor):
+                    gts_tensor = data.to(device)
+                else:
+                    print(f"Unexpected data type: {type(data)}")
+                    continue  # このイテレーションをスキップ
 
                 # シーケンス長を評価用に調整（パディングとカット）
                 if gts_tensor.shape[1] < cfg.eval_seq_len:
@@ -143,17 +141,25 @@ if __name__ == "__main__":
 
                 # モデルの予測を生成
                 outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_full)
-
                 outputs_bot_future = outputs_bot[:, args.open_loop_ctx:]
 
                 preds = decoder(outputs_bot_future)
 
-                # GTとPredの形状を統一
-                future_frames_gt_np = np.squeeze(future_frames_gt.cpu().numpy(), axis=0)
+                # 予測結果とグラウンドトゥルースのスケーリング調整
                 preds_np = np.squeeze(preds.cpu().numpy(), axis=0)
+                future_frames_gt_np = np.squeeze(future_frames_gt.cpu().numpy(), axis=0)
+
+                # スケール調整（Tanhの出力を0-1にスケーリング）
+                preds_np = (preds_np + 1) / 2
+                future_frames_gt_np = future_frames_gt_np / 255.0  # GTが0-255の範囲なら0-1にスケーリング
 
                 # メトリクスの計算
-                ssim, psnr = tools.compute_metrics(future_frames_gt_np, preds_np)
+                try:
+                    ssim, psnr = tools.compute_metrics(future_frames_gt_np, preds_np)
+                except Exception as e:
+                    print(f"メトリクス計算中のエラー: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
 
                 ssim_all.append(ssim)
                 psnr_all.append(psnr)
@@ -180,11 +186,11 @@ if __name__ == "__main__":
             except Exception as e:
                 print(f"評価中のエラー: {str(e)}")
                 import traceback
-                traceback.print_exc()  # エラーメッセージとスタックトレースを出力してデバッグしやすく
+                traceback.print_exc()  # エラーメッセージとスタックトレースを出力してデバッグ
 
     # メトリクスのプロット
     if ssim_all and psnr_all:
-        ssim_all = np.array(ssim_all)  # 例: ssim_allの形状が (num_examples, seq_len)
+        ssim_all = np.array(ssim_all)
         psnr_all = np.array(psnr_all)
 
         # ssim_allが2次元以上の場合、適切な軸で平均と標準偏差を計算
