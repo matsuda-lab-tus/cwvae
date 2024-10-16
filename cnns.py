@@ -5,7 +5,7 @@ import math
 
 
 class Encoder(nn.Module):
-    def __init__(self, levels, tmp_abs_factor, dense_layers=3, embed_size=800, channels_mult=1):
+    def __init__(self, levels, tmp_abs_factor, dense_layers=3, embed_size=100, channels_mult=1):
         super(Encoder, self).__init__()
         self.levels = levels
         self.tmp_abs_factor = tmp_abs_factor
@@ -142,3 +142,4 @@ class Decoder(nn.Module):
         x = x.view(batch_size, timesteps, self.output_channels, 64, 64)
         print(f"[DEBUG] Final output shape: {x.shape}, min: {x.min()}, max: {x.max()}")
         return x
+    
