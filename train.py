@@ -9,6 +9,9 @@ import tools
 import wandb
 from datetime import datetime  # 終了時間の取得に使用
 
+# Checkpointクラスのインポート
+from loggers.checkpoint import Checkpoint
+
 # メイン関数の定義
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -54,19 +57,14 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg['lr'], eps=1e-04)
     model.to(device)
 
+    # Checkpointクラスの初期化
+    checkpoint = Checkpoint(exp_rootdir)
+
     # モデルの復元（存在する場合）
     start_epoch = 0
-    checkpoint_dir = os.path.join(exp_rootdir, "checkpoints")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    
-    checkpoint_path = os.path.join(checkpoint_dir, "latest_checkpoint.pth")
-    
-    if os.path.exists(checkpoint_path):
-        print(f"モデルを {checkpoint_path} から復元します")
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
+    if checkpoint.exists():
+        print(f"モデルを {checkpoint.latest_checkpoint} から復元します")
+        start_epoch = checkpoint.restore(model, optimizer)
         print(f"トレーニングをエポック {start_epoch} から再開します")
     else:
         # モデルのパラメータを初期化
@@ -157,24 +155,8 @@ if __name__ == "__main__":
             model.train()
 
         # モデルの保存
-        # --- 修正開始 --- 
-        # モデルを保存する際に、エポック番号付きの名前をつけて保存
-        model_filename = os.path.join(checkpoint_dir, f"model_epoch_{epoch + 1}.pt")
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': loss.item(),
-        }, model_filename)
-        
-        # 最新のチェックポイントとして保存
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': loss.item(),
-        }, checkpoint_path)
-        # --- 修正終了 ---
+        checkpoint.save(model, optimizer, epoch)
+        print(f"モデルをエポック {epoch + 1} で保存しました。")
 
     # 終了時間をログ
     end_time = datetime.now()
