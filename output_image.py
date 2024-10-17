@@ -3,24 +3,18 @@ import pathlib
 import os
 from datetime import datetime
 import numpy as np
-
 from cwvae import build_model
-from data_loader2 import VideoDataset2  # 新しいデータローダーを使用
+from data_loader import VideoDataset  # 新しいデータローダーを使用
 import tools
 from loggers.checkpoint import Checkpoint
 import torch
-
-def load_new_dataset(datadir, batch_size, eval_seq_len):
-    # 新しいデータセットをロードする関数
-    dataset = VideoDataset2(datadir)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    return data_loader
+from data_loader import load_dataset
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--logdir",
-        default="logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.4_enchl3_ences800_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/model_50000",
+        default="logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.4_enchl3_ences800_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/model_230000",
         type=str,
         help="モデルのチェックポイントが保存されているディレクトリのパス（configは親ディレクトリに存在）",
     )
@@ -30,7 +24,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--eval-seq-len", default=100, type=int, help="評価シーケンスの総長"
     )
-    parser.add_argument("--datadir", default="./output2/test/intended", type=str, help="新しいデータセットのパス")
+    parser.add_argument("--datadir", default="./minerl_navigate/", type=str, help="新しいデータセットのパス")
     parser.add_argument(
         "--num-samples", default=1, type=int, help="各サンプルに対して生成する予測サンプルの数"
     )
@@ -50,10 +44,8 @@ if __name__ == "__main__":
 
     # ディレクトリの設定
     exp_rootdir = str(pathlib.Path(args.logdir).resolve().parent)
-    eval_logdir = os.path.join(
-        exp_rootdir, "eval_{}".format(datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
-    )
-    os.makedirs(eval_logdir, exist_ok=True)
+    predictions_dir = os.path.join(exp_rootdir, "predictions")
+    os.makedirs(predictions_dir, exist_ok=True)
 
     # 設定ファイルの読み込み
     cfg = tools.read_configs(os.path.join(exp_rootdir, "config.yml"))
@@ -64,8 +56,8 @@ if __name__ == "__main__":
     if args.datadir:
         cfg.datadir = args.datadir
 
-    # 新しいデータセットをロード
-    val_loader = load_new_dataset(args.datadir, cfg.batch_size, cfg.eval_seq_len)
+    # データセットのロード（train_loader, test_loaderを返す）
+    train_loader, test_loader = load_dataset(args.datadir, cfg.batch_size)
 
     # デバイスの設定（GPUが使えるか確認）
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -88,20 +80,26 @@ if __name__ == "__main__":
     checkpoint.restore(model, optimizer)
 
     # 評価の実施
-    ssim_all = []
-    psnr_all = []
-
     model.eval()  # モデルを評価モードに設定
     with torch.no_grad():
-        for i_ex, gts_tensor in enumerate(val_loader):
+        for i_ex, data in enumerate(test_loader):  # test_loaderを使用
             if i_ex >= args.num_examples:
                 break
             try:
                 # データをデバイスに送る
-                gts_tensor = gts_tensor.to(device)
+                if isinstance(data, (tuple, list)):
+                    gts_tensor = data[0].to(device)  # データがタプルまたはリストの場合、最初の要素を使用
+                elif isinstance(data, torch.Tensor):
+                    gts_tensor = data.to(device)
+                else:
+                    print(f"Unexpected data type: {type(data)}")
+                    continue  # このイテレーションをスキップ
 
-                # シーケンス長を評価用に調整
-                if gts_tensor.shape[1] > cfg.eval_seq_len:
+                # シーケンス長を評価用に調整（パディングとカット）
+                if gts_tensor.shape[1] < cfg.eval_seq_len:
+                    padding = cfg.eval_seq_len - gts_tensor.shape[1]
+                    gts_tensor = torch.nn.functional.pad(gts_tensor, (0, 0, 0, 0, 0, padding))
+                elif gts_tensor.shape[1] > cfg.eval_seq_len:
                     gts_tensor = gts_tensor[:, :cfg.eval_seq_len]
 
                 # コンテキストフレームと未来のフレームに分割
@@ -137,56 +135,26 @@ if __name__ == "__main__":
 
                 # モデルの予測を生成
                 outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_full)
-
                 outputs_bot_future = outputs_bot[:, args.open_loop_ctx:]
 
                 preds = decoder(outputs_bot_future)
 
-                preds_np = preds.cpu().numpy()
-                future_frames_gt_np = future_frames_gt.cpu().numpy()
+                # 予測結果とグラウンドトゥルースのスケーリング調整
+                preds_np = np.squeeze(preds.cpu().numpy(), axis=0)
 
-                # メトリクスの計算
-                ssim, psnr = tools.compute_metrics(future_frames_gt_np, preds_np)
+                # スケール調整（Tanhの出力を0-1にスケーリング）
+                preds_np = (preds_np + 1) / 2
 
-                ssim_all.append(ssim)
-                psnr_all.append(psnr)
-
-                gts_np = np.uint8(np.clip(gts_tensor.cpu().numpy(), 0, 1) * 255)
                 preds_np_vis = np.uint8(np.clip(preds_np, 0, 1) * 255)
 
-                # グラウンドトゥルース（GT）と予測結果を保存
-                path = os.path.join(eval_logdir, f"sample{i_ex}_gt/")
-                os.makedirs(path, exist_ok=True)
-                np.savez(os.path.join(path, "gt_ctx.npz"), gts_np[0, : args.open_loop_ctx])
-                np.savez(os.path.join(path, "gt_pred.npz"), gts_np[0, args.open_loop_ctx:])
-                if not args.no_save_grid:
-                    tools.save_as_grid(gts_np[0, : args.open_loop_ctx], path, "gt_ctx.png")
-                    tools.save_as_grid(gts_np[0, args.open_loop_ctx:], path, "gt_pred.png")
-
                 # 予測結果を保存
-                path = os.path.join(eval_logdir, f"sample{i_ex}/")
-                os.makedirs(path, exist_ok=True)
-                np.savez(os.path.join(path, "predictions.npz"), preds_np)
+                sample_dir = os.path.join(predictions_dir, f"sample_{i_ex}/")
+                os.makedirs(sample_dir, exist_ok=True)
+                np.savez(os.path.join(sample_dir, "predictions.npz"), preds_np)
                 if not args.no_save_grid:
-                    tools.save_as_grid(preds_np_vis[0], path, "predictions.png")
+                    tools.save_as_grid(preds_np_vis[0], sample_dir, "predictions.png")
 
             except Exception as e:
                 print(f"評価中のエラー: {str(e)}")
                 import traceback
-                traceback.print_exc()  # エラーメッセージとスタックトレースを出力してデバッグしやすく
-
-    # メトリクスのプロット
-    if ssim_all and psnr_all:
-        ssim_all = np.array(ssim_all)  # ssim_all: (num_examples, seq_len)
-        psnr_all = np.array(psnr_all)
-
-        mean_ssim = np.mean(ssim_all, axis=0)  # (seq_len,)
-        std_ssim = np.std(ssim_all, axis=0)
-        mean_psnr = np.mean(psnr_all, axis=0)
-        std_psnr = np.std(psnr_all, axis=0)
-
-        # メトリクスをプロット
-        tools.plot_metrics(mean_ssim, std_ssim, eval_logdir, "ssim")
-        tools.plot_metrics(mean_psnr, std_psnr, eval_logdir, "psnr")
-    else:
-        print("メトリクスを計算できませんでした。評価中にエラーが発生した可能性があります。")
+                traceback.print_exc()  # エラーメッセージとスタックトレースを出力してデバッグ
