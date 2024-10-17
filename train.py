@@ -99,7 +99,10 @@ if __name__ == "__main__":
             
             # デコーダーを通して生成画像を得る
             obs_decoded = decoder(outputs_bot)
-            print(f"obs_decoded shape: {obs_decoded.shape}")
+            # obs_decodedがタプルの場合、最初の要素を使用する
+            if isinstance(obs_decoded, tuple):
+                obs_decoded = obs_decoded[0]
+            print(f"obs_decoded: {obs_decoded}")
             
             # 損失の計算
             losses = model.compute_losses(

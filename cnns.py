@@ -5,7 +5,7 @@ import math
 
 
 class Encoder(nn.Module):
-    def __init__(self, levels, tmp_abs_factor, dense_layers=3, embed_size=100, channels_mult=1):
+    def __init__(self, levels, tmp_abs_factor, dense_layers=3, embed_size=1024, channels_mult=1):
         super(Encoder, self).__init__()
         self.levels = levels
         self.tmp_abs_factor = tmp_abs_factor

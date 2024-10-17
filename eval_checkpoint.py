@@ -20,7 +20,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--logdir",
-        default="logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.1_enchl3_ences1000_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/checkpoints",
+        default="/home/yamada_24/cwvae/logs/minerl_session_20241016_172435/checkpoints",
         type=str,
         help="モデルのチェックポイントが保存されているディレクトリのパス（configは親ディレクトリに存在）",
     )
@@ -190,19 +190,6 @@ if __name__ == "__main__":
                 np.savez(os.path.join(path, "gt_pred.npz"), gts_np[0, args.open_loop_ctx:])
                 print(f"[DEBUG] Ground truth saved: {path}")
 
-                # 予測画像のグリッド保存
-                if not args.no_save_grid:
-                    try:
-                        print(f"[DEBUG] Saving grid of context frames to: {os.path.join(path, 'gt_ctx.png')}")
-                        tools.save_as_grid(gts_np[0, : args.open_loop_ctx], path, "gt_ctx.png")
-                        print(f"[DEBUG] Saving grid of predicted frames to: {os.path.join(path, 'gt_pred.png')}")
-                        tools.save_as_grid(gts_np[0, args.open_loop_ctx:], path, "gt_pred.png")
-                        print("[DEBUG] GT images saved successfully")
-                    except Exception as e:
-                        print(f"[ERROR] Failed to save GT images: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-
                 # 予測結果を保存
                 path = os.path.join(eval_logdir, f"sample{i_ex}/")
                 os.makedirs(path, exist_ok=True)
@@ -210,22 +197,11 @@ if __name__ == "__main__":
                 np.savez(os.path.join(path, "predictions.npz"), preds_np)
                 print(f"[DEBUG] Predictions saved as NPZ at: {os.path.join(path, 'predictions.npz')}")
 
-                # 予測結果のグリッド保存
-                if not args.no_save_grid:
-                    try:
-                        print(f"[DEBUG] Saving grid of predicted frames to: {os.path.join(path, 'predictions.png')}")
-                        tools.save_as_grid(preds_np_vis[0], path, "predictions.png")
-                        print("[DEBUG] Prediction images saved successfully")
-                    except Exception as e:
-                        print(f"[ERROR] Failed to save prediction images: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-
-
             except Exception as e:
-                print(f"評価中のエラー: {str(e)}")
+                print(f"[ERROR] 評価中のエラー: {str(e)}")
                 import traceback
                 traceback.print_exc()  # エラーメッセージとスタックトレースを出力してデバッグしやすく
+
 
     # メトリクスのプロット
     if ssim_all and psnr_all:

@@ -10,12 +10,6 @@ import tools
 from loggers.checkpoint import Checkpoint
 import torch
 
-def load_new_dataset(datadir, batch_size, eval_seq_len):
-    # 新しいデータセットをロードする関数
-    dataset = VideoDataset2(datadir)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False)
-    return data_loader
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
