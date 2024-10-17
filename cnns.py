@@ -90,15 +90,47 @@ class Decoder(nn.Module):
         self.channels_mult = channels_mult
 
         # 全結合層で1024次元に変換
-        self.fc = nn.Linear(self.embed_size, channels_mult * 1024)
+        self.fc = nn.Linear(self.embed_size, 1024)
 
-        # 逆畳み込み層（TensorFlow版に合わせてフィルター数を調整）
+        # フィルター数の定義
         filters = 32
-        self.deconv1 = nn.ConvTranspose2d(channels_mult * filters * 4, channels_mult * filters * 4, kernel_size=5, stride=2, padding=1)
-        self.deconv2 = nn.ConvTranspose2d(channels_mult * filters * 4, channels_mult * filters * 2, kernel_size=5, stride=2, padding=1)
-        self.deconv3 = nn.ConvTranspose2d(channels_mult * filters * 2, channels_mult * filters, kernel_size=6, stride=2, padding=1)
-        self.deconv4 = nn.ConvTranspose2d(channels_mult * filters, channels_mult * filters // 2, kernel_size=6, stride=2, padding=1)
-        self.deconv5 = nn.ConvTranspose2d(channels_mult * filters // 2, output_channels, kernel_size=6, stride=2, padding=1)
+
+        # ConvTranspose2d の in_channels と out_channels を修正
+        self.deconv1 = nn.ConvTranspose2d(
+            in_channels=1024,
+            out_channels=self.channels_mult * filters * 4,  # 128
+            kernel_size=5,
+            stride=2,
+            padding=1
+        )
+        self.deconv2 = nn.ConvTranspose2d(
+            in_channels=self.channels_mult * filters * 4,  # 128
+            out_channels=self.channels_mult * filters * 2,  # 64
+            kernel_size=5,
+            stride=2,
+            padding=1
+        )
+        self.deconv3 = nn.ConvTranspose2d(
+            in_channels=self.channels_mult * filters * 2,  # 64
+            out_channels=self.channels_mult * filters,      # 32
+            kernel_size=6,
+            stride=2,
+            padding=1
+        )
+        self.deconv4 = nn.ConvTranspose2d(
+            in_channels=self.channels_mult * filters,       # 32
+            out_channels=self.channels_mult * filters // 2, # 16
+            kernel_size=6,
+            stride=2,
+            padding=2
+        )
+        self.deconv5 = nn.ConvTranspose2d(
+            in_channels=self.channels_mult * filters // 2,  # 16
+            out_channels=output_channels,                   # 出力チャネル数
+            kernel_size=6,
+            stride=2,
+            padding=2
+        )
 
         self.activation = nn.LeakyReLU(negative_slope=0.01)
 
@@ -119,22 +151,22 @@ class Decoder(nn.Module):
         x = self.activation(self.fc(x))
         print(f"[DEBUG] After fc: {x.shape}, min: {x.min()}, max: {x.max()}")
 
-        # Reshape to 4x4 grid for deconvolution
-        x = x.view(batch_size * timesteps, 512, 4, 4)
-        print(f"[DEBUG] After reshaping to 4x4: {x.shape}, min: {x.min()}, max: {x.max()}")
+        # Reshape to 1x1 grid for deconvolution
+        x = x.view(batch_size * timesteps, 1024, 1, 1)
+        print(f"[DEBUG] After reshaping to 1x1: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         # Upsample through deconvolution layers
         x = self.activation(self.deconv1(x))
-        print(f"[DEBUG] After deconv1 (8x8): {x.shape}, min: {x.min()}, max: {x.max()}")
+        print(f"[DEBUG] After deconv1: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.activation(self.deconv2(x))
-        print(f"[DEBUG] After deconv2 (16x16): {x.shape}, min: {x.min()}, max: {x.max()}")
+        print(f"[DEBUG] After deconv2: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.activation(self.deconv3(x))
-        print(f"[DEBUG] After deconv3 (32x32): {x.shape}, min: {x.min()}, max: {x.max()}")
+        print(f"[DEBUG] After deconv3: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.activation(self.deconv4(x))
-        print(f"[DEBUG] After deconv4 (64x64): {x.shape}, min: {x.min()}, max: {x.max()}")
+        print(f"[DEBUG] After deconv4: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.deconv5(x)
         print(f"[DEBUG] After deconv5 (final layer): {x.shape}, min: {x.min()}, max: {x.max()}")
@@ -145,4 +177,3 @@ class Decoder(nn.Module):
         x = x.view(batch_size, timesteps, self.output_channels, 64, 64)
         print(f"[DEBUG] Final output shape: {x.shape}, min: {x.min()}, max: {x.max()}")
         return x
-    
