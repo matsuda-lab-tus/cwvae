@@ -98,10 +98,7 @@ if __name__ == "__main__":
             outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded)
             
             # デコーダーを通して生成画像を得る
-            obs_decoded = decoder(outputs_bot)
-            # obs_decodedがタプルの場合、最初の要素を使用する
-            if isinstance(obs_decoded, tuple):
-                obs_decoded = obs_decoded[0]
+            obs_decoded = model.decoder(outputs_bot)[0]
             print(f"obs_decoded: {obs_decoded}")
             
             # 損失の計算
@@ -140,7 +137,15 @@ if __name__ == "__main__":
                     val_batch = val_batch[:, :cfg['seq_len']]
                 val_obs_encoded = encoder(val_batch)
                 val_outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded)
-                val_obs_decoded = decoder(val_outputs_bot)
+                val_decoder_output = decoder(val_outputs_bot)
+
+                # デコーダーの出力がタプルの場合、最初の要素を使用する
+                if isinstance(val_decoder_output, tuple):
+                    val_obs_decoded = val_decoder_output[0]
+                else:
+                    val_obs_decoded = val_decoder_output
+                print(f"val_obs_decoded: {val_obs_decoded}")
+
                 val_losses_dict = model.compute_losses(
                     obs=val_batch,
                     obs_decoded=val_obs_decoded,

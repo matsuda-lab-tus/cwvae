@@ -304,7 +304,7 @@ def build_model(cfg, open_loop=True):
         raise ValueError(f"Encoder output does not match expected levels. Expected {cfg['levels']}, but got {len(obs_encoded)}.")
 
     outputs_bot, last_state_all_levels, priors, posteriors = model.hierarchical_unroll(obs_encoded)
-    obs_decoded, _ = model.decoder(outputs_bot)
+    obs_decoded = model.decoder(outputs_bot)[0]
 
     losses = model.compute_losses(
         obs,
