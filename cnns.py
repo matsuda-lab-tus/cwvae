@@ -83,6 +83,10 @@ class Encoder(nn.Module):
         return layers
 
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 class Decoder(nn.Module):
     def __init__(self, output_channels, embed_size, channels_mult=1, final_activation=None):
         super(Decoder, self).__init__()
@@ -141,6 +145,8 @@ class Decoder(nn.Module):
             self.final_activation = nn.Tanh()
 
     def forward(self, x):
+        intermediate_outputs = {}  # 中間出力を保存する辞書
+
         batch_size, timesteps, embed_size = x.size()
         print(f"[DEBUG] Input to Decoder: {x.shape}, min: {x.min()}, max: {x.max()}")
 
@@ -150,31 +156,41 @@ class Decoder(nn.Module):
 
         # Pass through fully connected layer
         x = self.activation(self.fc(x))
+        intermediate_outputs['fc'] = x  # fc層の出力を保存
         print(f"[DEBUG] After fc: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         # Reshape to 1x1 grid for deconvolution
         x = x.view(batch_size * timesteps, 1024, 1, 1)
+        intermediate_outputs['reshaped'] = x  # リシェイプ後の出力を保存
         print(f"[DEBUG] After reshaping to 1x1: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         # Upsample through deconvolution layers
         x = self.activation(self.deconv1(x))
+        intermediate_outputs['deconv1'] = x  # deconv1層の出力を保存
         print(f"[DEBUG] After deconv1: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.activation(self.deconv2(x))
+        intermediate_outputs['deconv2'] = x  # deconv2層の出力を保存
         print(f"[DEBUG] After deconv2: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.activation(self.deconv3(x))
+        intermediate_outputs['deconv3'] = x  # deconv3層の出力を保存
         print(f"[DEBUG] After deconv3: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.activation(self.deconv4(x))
+        intermediate_outputs['deconv4'] = x  # deconv4層の出力を保存
         print(f"[DEBUG] After deconv4: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.deconv5(x)
+        intermediate_outputs['deconv5'] = x  # deconv5層の出力を保存
         print(f"[DEBUG] After deconv5 (final layer): {x.shape}, min: {x.min()}, max: {x.max()}")
 
         x = self.final_activation(x)
-        print(f"[DEBUG] After final activation (Tanh): {x.shape}, min: {x.min()}, max: {x.max()}")
+        intermediate_outputs['final_activation'] = x  # 最終活性化関数後の出力を保存
+        print(f"[DEBUG] After final activation ({self.final_activation.__class__.__name__}): {x.shape}, min: {x.min()}, max: {x.max()}")
 
+        # Reshape to original dimensions
         x = x.view(batch_size, timesteps, self.output_channels, 64, 64)
         print(f"[DEBUG] Final output shape: {x.shape}, min: {x.min()}, max: {x.max()}")
-        return x
+
+        return x, intermediate_outputs  # 最終出力と中間出力を返す
