@@ -35,7 +35,7 @@ class RSSMCell(nn.Module):
         self.prior_stddev_dense = nn.Linear(self._embed_size, self._state_size)
 
         # 観測入力のための埋め込み層
-        self.obs_embed_dense = nn.Linear(1024, self._embed_size)  # 修正: 入力サイズを4096から1024に変更
+        self.obs_embed_dense = nn.Linear(4096, self._embed_size)  # 入力サイズは4096
 
         # Posterior（事後分布）のための全結合層
         self.posterior_h1_dense = nn.Linear(
@@ -190,4 +190,4 @@ class RSSMCell(nn.Module):
                     nn.init.kaiming_uniform_(param, nonlinearity='relu')
                 elif 'bias' in name:
                     nn.init.constant_(param, 0)
-        # 必要に応じて他の層も初期化
+    

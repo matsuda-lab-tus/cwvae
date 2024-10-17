@@ -14,6 +14,7 @@ class Encoder(nn.Module):
         self.dense_layers_num = dense_layers
         self.embed_size = embed_size
 
+
         # Define convolutional layers
         filters = 32  
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=channels_mult * filters, kernel_size=4, stride=2, padding=1)
