@@ -154,9 +154,18 @@ if __name__ == "__main__":
             wandb.log({"val_loss": average_val_loss, "epoch": epoch})
             model.train()
 
-        # モデルの保存
+        # エポックごとにモデルを保存（エポック番号を含む）
+        checkpoint_path = os.path.join(exp_rootdir, f"checkpoint_epoch_{epoch + 1}.pth")
+        torch.save({
+            'epoch': epoch + 1,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'cfg': cfg,
+        }, checkpoint_path)
+        print(f"モデルをエポック {epoch + 1} で {checkpoint_path} として保存しました。")
+
+        # Checkpointクラスによる最新チェックポイントの保存（必要な場合）
         checkpoint.save(model, optimizer, epoch)
-        print(f"モデルをエポック {epoch + 1} で保存しました。")
 
     # 終了時間をログ
     end_time = datetime.now()
