@@ -10,6 +10,7 @@ from torch.autograd import Variable
 from skimage.metrics import structural_similarity as ssim_metric
 from skimage.metrics import peak_signal_noise_ratio as psnr_metric
 from torchvision.utils import save_image
+from yaml.constructor import ConstructorError
 
 class AttrDict(dict):
     """
@@ -144,45 +145,25 @@ def _to_padded_strip(images):
 
 def compute_metrics(gt, pred):
     """
-    SSIMおよびPSNRを計算する関数。
-    
-    Args:
-    gt (np.ndarray): グラウンドトゥルース画像 (batch_size, seq_len, channels, height, width)
-    pred (np.ndarray): 予測画像 (batch_size, seq_len, channels, height, width)
-    
-    Returns:
-    np.ndarray, np.ndarray: 各バッチおよび各時刻に対するSSIMとPSNRの配列
+    グラウンドトゥルース (gt) と予測 (pred) のSSIMおよびPSNRを計算する関数
     """
-    # gt と pred の形状を確認
-    print(f"[DEBUG] gt shape: {gt.shape}")
-    print(f"[DEBUG] pred shape: {pred.shape}")
-
-    # GTと予測の形状が異なる場合、修正する
-    if gt.shape != pred.shape:
-        # バッチ次元が異なる場合、GTの形状をPredに合わせる
-        if gt.shape[0] != pred.shape[0]:
-            if gt.shape[0] == 64 and pred.shape[0] == 1:
-                gt = np.expand_dims(gt, axis=0)
-            elif gt.shape[0] == 1 and pred.shape[0] == 64:
-                pred = np.squeeze(pred, axis=0)
-            else:
-                raise ValueError(f"Unexpected batch size mismatch. GT shape: {gt.shape}, Pred shape: {pred.shape}")
-
-    # バッチサイズとシーケンス長を取得
-    bs = pred.shape[0]  # batch_size
-    T = pred.shape[1]   # seq_len
-
-    # SSIMとPSNRを格納する配列を初期化
-    ssim = np.zeros((bs, T))
-    psnr = np.zeros((bs, T))
-
-    # 各バッチおよび各時刻に対してメトリクスを計算
-    for i in range(bs):
-        for t in range(T):
-            # SSIMとPSNRを計算（各フレームについて1回計算する）
-            ssim[i, t] = ssim_metric(gt[i, t], pred[i, t], multichannel=True, data_range=gt[i, t].max() - gt[i, t].min())
-            psnr[i, t] = psnr_metric(gt[i, t], pred[i, t], data_range=gt[i, t].max() - gt[i, t].min())
-
+    seq_len = gt.shape[1]
+    ssim = np.zeros((gt.shape[0], seq_len))
+    psnr = np.zeros((gt.shape[0], seq_len))
+    
+    for i in range(gt.shape[0]):
+        for t in range(seq_len):
+            # SSIMの計算時にwin_sizeを5に設定
+            ssim[i, t] = ssim_metric(
+                gt[i, t], pred[i, t],
+                multichannel=True,
+                data_range=gt[i, t].max() - gt[i, t].min(),
+                win_size=5,  # 画像サイズが64x64なので、5x5のウィンドウサイズを指定
+                channel_axis=-1  # チャンネルが最後の軸（カラーチャンネル）
+            )
+            # PSNRの計算
+            psnr[i, t] = 10 * np.log10(1 / np.mean((gt[i, t] - pred[i, t]) ** 2))
+    
     return ssim, psnr
 
 def plot_metrics(mean_metric, std_metric, logdir, metric_name):
@@ -227,3 +208,43 @@ def save_as_grid(images, path, filename, nrow=8):
         print(f"[ERROR] Failed to save image grid to {save_path}: {e}")
         import traceback
         traceback.print_exc()
+
+def read_configs(config_path, base_config_path=None, **kwargs):
+    """
+    Reads and parses the configuration files (YAML format) and returns a configuration dictionary.
+    """
+    class TorchDeviceLoader(yaml.SafeLoader):
+        pass
+
+    def torch_device_constructor(loader, node):
+        sequence = loader.construct_sequence(node)
+        if isinstance(sequence, list) and len(sequence) == 1:
+            return torch.device(sequence[0])
+        else:
+            raise ValueError(f"Invalid sequence format for torch.device: {sequence}")
+
+    def attrdict_constructor(loader, node):
+        return AttrDict(loader.construct_mapping(node, deep=True))
+
+    # Register custom tag to read torch.device and AttrDict from YAML
+    TorchDeviceLoader.add_constructor('tag:yaml.org,2002:python/object/apply:torch.device', torch_device_constructor)
+    TorchDeviceLoader.add_constructor('tag:yaml.org,2002:python/object/new:tools.AttrDict', attrdict_constructor)
+
+    if base_config_path is not None:
+        base_config = yaml.safe_load(Path(base_config_path).read_text())
+        config = base_config.copy()
+        config.update(yaml.load(Path(config_path).read_text(), Loader=TorchDeviceLoader))
+        assert len(set(config).difference(base_config)) == 0, "Found new keys in config. Make sure to set them in base_config first."
+    else:
+        with open(config_path, "r") as f:
+            config = yaml.load(f, Loader=TorchDeviceLoader)
+
+    config = AttrDict(config)
+
+    if kwargs.get("datadir", None) is not None:
+        config.datadir = kwargs["datadir"]
+    if kwargs.get("logdir", None) is not None:
+        config.logdir = kwargs["logdir"]
+
+    validate_config(config)
+    return config

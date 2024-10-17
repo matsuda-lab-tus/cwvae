@@ -19,9 +19,15 @@ class Checkpoint:
             os.makedirs(save_path, exist_ok=True)
             save_path = os.path.join(save_path, self._ckpt_name)
 
+        # DataParallelの場合、model.module.state_dict()を保存
+        if isinstance(model, torch.nn.DataParallel):
+            state_dict = model.module.state_dict()
+        else:
+            state_dict = model.state_dict()
+
         torch.save({
             'epoch': epoch,
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': state_dict,
             'optimizer_state_dict': optimizer.state_dict(),
         }, save_path)
         print(f"Checkpoint saved at {save_path}")
@@ -38,8 +44,13 @@ class Checkpoint:
         if not os.path.exists(restore_path):
             raise FileNotFoundError(f"Checkpoint not found at {restore_path}")
 
-        checkpoint = torch.load(restore_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        checkpoint = torch.load(restore_path, map_location=model.device if hasattr(model, 'device') else 'cpu')
+        
+        # DataParallelの場合、model.moduleにロード
+        if isinstance(model, torch.nn.DataParallel):
+            model.module.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            model.load_state_dict(checkpoint['model_state_dict'])
 
         if optimizer is not None and 'optimizer_state_dict' in checkpoint:
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
@@ -48,6 +59,21 @@ class Checkpoint:
         print(f"Checkpoint restored from {restore_path}, starting from epoch {epoch}")
         return epoch
     
+    def exists(self):
+        """
+        チェックポイントが存在するかを確認します。
+        """
+        return os.path.exists(os.path.join(self.log_dir_model, self._ckpt_name))
+    
+    @property
+    def latest_checkpoint(self):
+        """
+        最新のチェックポイントのパスを取得します。
+        """
+        return os.path.join(self.log_dir_model, self._ckpt_name)
+    
     def get_last_step(self):
-        # 復元した際に取得したステップを返す
+        """
+        復元した際に取得したステップを返します。
+        """
         return getattr(self, 'start_step', 0)

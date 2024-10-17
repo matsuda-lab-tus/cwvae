@@ -10,12 +10,97 @@ from loggers.checkpoint import Checkpoint
 import torch
 import matplotlib.pyplot as plt
 from data_loader import load_dataset
+import torchvision.utils as vutils
+
+
+
+import torchvision.utils as vutils
+import os
+import matplotlib.pyplot as plt
+from PIL import Image
+import numpy as np
+
+def normalize(tensor):
+    """
+    チャンネルごとにテンソルを0-1に正規化します。
+
+    Args:
+        tensor (torch.Tensor): 正規化するテンソル。形状は [B, C, H, W] または [C, H, W]。
+
+    Returns:
+        torch.Tensor: 正規化されたテンソル。
+    """
+    if tensor.dim() == 4:
+        # [B, C, H, W] の場合
+        min_vals = tensor.amin(dim=(2, 3), keepdim=True)
+        max_vals = tensor.amax(dim=(2, 3), keepdim=True)
+    elif tensor.dim() == 3:
+        # [C, H, W] の場合
+        min_vals = tensor.amin(dim=(1, 2), keepdim=True)
+        max_vals = tensor.amax(dim=(1, 2), keepdim=True)
+    else:
+        # サポートされていない形状の場合はそのまま返す
+        print(f"[WARN] Unsupported tensor shape {tensor.shape} for normalization. Skipping normalization.")
+        return tensor
+    tensor = (tensor - min_vals) / (max_vals - min_vals + 1e-8)
+    return tensor
+
+def save_intermediate_outputs(intermediate_outputs, save_dir, sample_id):
+    os.makedirs(save_dir, exist_ok=True)
+    
+    for name, tensor in intermediate_outputs.items():
+        # テンソルの形状を確認
+        if tensor.dim() == 5:
+            # 5次元テンソル（B, T, C, H, W）はスキップ
+            print(f"[WARN] {name} has 5 dimensions {tensor.shape}. Skipping image save.")
+            continue
+        elif tensor.dim() == 4 and tensor.size(1) in [1, 3]:
+            # 4次元テンソル（B, C, H, W）の場合
+            normalized_tensor = normalize(tensor)
+            grid = vutils.make_grid(normalized_tensor, nrow=8, normalize=False)
+        elif tensor.dim() == 3 and tensor.size(0) in [1, 3]:
+            # 3次元テンソル（C, H, W）の場合
+            normalized_tensor = normalize(tensor)
+            grid = vutils.make_grid(normalized_tensor.unsqueeze(0), nrow=8, normalize=False)
+        else:
+            print(f"[WARN] {name} has unsupported shape {tensor.shape}. Saving histogram instead.")
+            # ヒストグラムをプロット
+            plt.figure()
+            tensor_cpu = tensor.cpu().numpy().flatten()
+            plt.hist(tensor_cpu, bins=50, color='blue', alpha=0.7)
+            plt.title(f"{name} Histogram")
+            plt.xlabel("Value")
+            plt.ylabel("Frequency")
+            save_path = os.path.join(save_dir, f"sample{sample_id}_{name}_histogram.png")
+            plt.savefig(save_path)
+            plt.close()
+            print(f"Saved histogram of {name} to {save_path}")
+            continue  # 次のテンソルへ
+
+        # NumPy配列に変換
+        ndarr = grid.mul(255).clamp(0, 255).byte().cpu().numpy()
+        # チャンネルを最後の次元に移動
+        if ndarr.shape[0] in [1, 3]:
+            ndarr = np.transpose(ndarr, (1, 2, 0))  # [C, H, W] -> [H, W, C]
+        else:
+            print(f"[WARN] Unexpected channel size for {name}: {ndarr.shape[0]}. Skipping image save.")
+            continue
+
+        # PIL画像として保存
+        try:
+            im = Image.fromarray(ndarr)
+            save_path = os.path.join(save_dir, f"sample{sample_id}_{name}.png")
+            im.save(save_path)
+            print(f"Saved {name} to {save_path}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save {name} as image: {e}")
+            continue
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--logdir",
-        default="logs/minerl/minerl_cwvae_rssmcell_3l_f6_decsd0.4_enchl3_ences800_edchnlmult1_ss100_ds800_es800_seq100_lr0.0001_bs50/model_230000",
+        default="/home/yamada_24/cwvae/logs/minerl_cwvae_20241017_145429/model",
         type=str,
         help="モデルのチェックポイントが保存されているディレクトリのパス（configは親ディレクトリに存在）",
     )
@@ -143,7 +228,12 @@ if __name__ == "__main__":
                 outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_full)
                 outputs_bot_future = outputs_bot[:, args.open_loop_ctx:]
 
-                preds = decoder(outputs_bot_future)
+                # デコーダーからの出力をキャプチャ（中間出力も含む）
+                preds, intermediate_outputs = decoder(outputs_bot_future)
+
+                # 中間出力を保存
+                save_dir = os.path.join(eval_logdir, f"sample{i_ex}_intermediate_outputs")
+                save_intermediate_outputs(intermediate_outputs, save_dir, sample_id=i_ex)
 
                 # 予測結果とグラウンドトゥルースのスケーリング調整
                 preds_np = np.squeeze(preds.cpu().numpy(), axis=0)
@@ -168,20 +258,20 @@ if __name__ == "__main__":
                 preds_np_vis = np.uint8(np.clip(preds_np, 0, 1) * 255)
 
                 # グラウンドトゥルース（GT）と予測結果を保存
-                path = os.path.join(eval_logdir, f"sample{i_ex}_gt/")
-                os.makedirs(path, exist_ok=True)
-                np.savez(os.path.join(path, "gt_ctx.npz"), gts_np[0, : args.open_loop_ctx])
-                np.savez(os.path.join(path, "gt_pred.npz"), gts_np[0, args.open_loop_ctx:])
+                path_gt = os.path.join(eval_logdir, f"sample{i_ex}_gt/")
+                os.makedirs(path_gt, exist_ok=True)
+                np.savez(os.path.join(path_gt, "gt_ctx.npz"), gts_np[0, : args.open_loop_ctx])
+                np.savez(os.path.join(path_gt, "gt_pred.npz"), gts_np[0, args.open_loop_ctx:])
                 if not args.no_save_grid:
-                    tools.save_as_grid(gts_np[0, : args.open_loop_ctx], path, "gt_ctx.png")
-                    tools.save_as_grid(gts_np[0, args.open_loop_ctx:], path, "gt_pred.png")
+                    tools.save_as_grid(gts_np[0, : args.open_loop_ctx], path_gt, "gt_ctx.png")
+                    tools.save_as_grid(gts_np[0, args.open_loop_ctx:], path_gt, "gt_pred.png")
 
                 # 予測結果を保存
-                path = os.path.join(eval_logdir, f"sample{i_ex}/")
-                os.makedirs(path, exist_ok=True)
-                np.savez(os.path.join(path, "predictions.npz"), preds_np)
+                path_pred = os.path.join(eval_logdir, f"sample{i_ex}/")
+                os.makedirs(path_pred, exist_ok=True)
+                np.savez(os.path.join(path_pred, "predictions.npz"), preds_np)
                 if not args.no_save_grid:
-                    tools.save_as_grid(preds_np_vis[0], path, "predictions.png")
+                    tools.save_as_grid(preds_np_vis[0], path_pred, "predictions.png")
 
             except Exception as e:
                 print(f"評価中のエラー: {str(e)}")
