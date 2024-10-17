@@ -26,12 +26,14 @@ if __name__ == "__main__":
     wandb.init(project="CW-VAE", config=cfg)
 
     # デバイスの設定
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     cfg['device'] = device
 
-    # 現在の日付と時間を使ってフォルダ名を生成
-    current_time = datetime.now().strftime('%Y%m%d_%H%M%S')
-    exp_rootdir = os.path.join(cfg['logdir'], f"{cfg['dataset']}_session_{current_time}")
+    # わかりやすい名前を使用した保存ディレクトリの設定
+    dataset_name = cfg['dataset']
+    model_name = "cwvae"  # モデル名
+    current_time = datetime.now().strftime('%Y%m%d_%H%M%S')  # 日時情報を短縮
+    exp_rootdir = os.path.join(cfg['logdir'], f"{dataset_name}_{model_name}_{current_time}")
     os.makedirs(exp_rootdir, exist_ok=True)
 
     # 設定を保存
