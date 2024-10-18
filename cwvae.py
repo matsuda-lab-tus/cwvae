@@ -297,14 +297,14 @@ def build_model(cfg, open_loop=True):
 
     model.apply(model.init_weights)
 
-    obs = torch.zeros([cfg['batch_size'], cfg['seq_len'], cfg['channels'], 64, 64]).to(device)
-    obs_encoded = model.encoder(obs)
+    obs = torch.zeros([cfg['batch_size'], cfg['seq_len'], cfg['channels'], 64, 64]).to(device) # 仮の動画データを作ってAIに渡す
+    obs_encoded = model.encoder(obs) # AIがこの動画の重要な情報（特徴）を抽出
 
     if len(obs_encoded) != cfg['levels']:
         raise ValueError(f"Encoder output does not match expected levels. Expected {cfg['levels']}, but got {len(obs_encoded)}.")
 
-    outputs_bot, last_state_all_levels, priors, posteriors = model.hierarchical_unroll(obs_encoded)
-    obs_decoded = model.decoder(outputs_bot)[0]
+    outputs_bot, last_state_all_levels, priors, posteriors = model.hierarchical_unroll(obs_encoded) # 「次に何が起きるか」を考える
+    obs_decoded = model.decoder(outputs_bot)[0] # AIが考えた「次の瞬間の特徴」を元にして、新しいフレーム（画像）を作る
 
     losses = model.compute_losses(
         obs,
@@ -314,9 +314,9 @@ def build_model(cfg, open_loop=True):
         dec_stddev=cfg['dec_stddev'],
         free_nats=cfg['free_nats'],
         beta=cfg['beta'],
-    )
+    ) # AIが予測した動画と、本当の動画の違いをチェックする
 
-    if open_loop:
+    if open_loop: # AIが動画の一部を見たあと、その続きも自分で予測して作れるようにしています。
         ctx_len = cfg['open_loop_ctx']
         pre_posteriors, pre_priors, post_priors, outputs_bot_level = model.open_loop_unroll(
             obs_encoded, ctx_len=ctx_len, use_observations=cfg.get('use_obs', True)
@@ -347,4 +347,3 @@ def build_model(cfg, open_loop=True):
         "meta": {"model": model},
         "open_loop_obs_decoded": open_loop_obs_decoded,
     }
-
