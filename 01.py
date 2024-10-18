@@ -1,79 +1,142 @@
+import os
 import torch
-import torch.nn as nn
+import argparse
+import yaml
+from torch.utils.data import DataLoader
+from cwvae import build_model
+from data_loader import load_dataset
+import tools
+from datetime import datetime
+from loggers.checkpoint import Checkpoint
 
-# Encoder: e_l^t = e(x_t:t+k^l-1)
-class Encoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
-        super(Encoder, self).__init__()
-        self.rnn = nn.GRU(input_dim, hidden_dim)
+# モデルをトレーニングする関数
+def train(cfg, train_loader, val_loader, model, encoder, decoder, optimizer, exp_rootdir, num_epochs):
+    print("トレーニングを開始します。")
+    device = cfg['device']
+    start_epoch = 0
 
-    def forward(self, x_seq):
-        # x_seqはシーケンスデータ (x_t:t+k^l-1)
-        _, h_n = self.rnn(x_seq)  # GRUの最後の隠れ状態を取得
-        return h_n
+    # チェックポイント管理を初期化（学習済みモデルがないため最初から学習開始）
+    checkpoint = Checkpoint(exp_rootdir)
+    
+    # トレーニングループ
+    for epoch in range(start_epoch, num_epochs):
+        model.train()
+        for batch_idx, train_batch in enumerate(train_loader):
+            train_batch = train_batch.to(device)
+            # シーケンス長を設定された長さに調整
+            if train_batch.shape[1] > cfg['seq_len']:
+                train_batch = train_batch[:, :cfg['seq_len']]
 
-# Posterior transition: q_l^t(s_l^t | s_l^t-1, s_l+1^t, e_l^t)
-class PosteriorTransition(nn.Module):
-    def __init__(self, latent_dim, hidden_dim):
-        super(PosteriorTransition, self).__init__()
-        self.fc = nn.Linear(latent_dim * 2 + hidden_dim, latent_dim)
+            optimizer.zero_grad()
 
-    def forward(self, s_l_prev, s_l_next, e_l):
-        # s_l_prev, s_l_next: 前と後の潜在状態, e_l: エンコーダ出力
-        
-        # e_lは次元が異なるため、次元を合わせる
-        if e_l.dim() == 3:  # 3次元ならバッチ次元とタイムステップ次元を考慮
-            e_l = e_l.squeeze(0)  # バッチ次元を削除
-        
-        input_data = torch.cat([s_l_prev, s_l_next, e_l], dim=-1)
-        return self.fc(input_data)
+            # エンコーダーを通して特徴量を抽出
+            obs_encoded = encoder(train_batch)
 
+            # モデルの出力を取得
+            outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded)
+            
+            # デコーダーを通して再構成された画像を得る
+            obs_decoded = decoder(outputs_bot)[0]
 
-# Prior transition: p_l^t(s_l^t | s_l^t-1, s_l+1^t)
-class PriorTransition(nn.Module):
-    def __init__(self, latent_dim):
-        super(PriorTransition, self).__init__()
-        self.fc = nn.Linear(latent_dim * 2, latent_dim)
+            # 損失を計算
+            losses = model.compute_losses(
+                obs=train_batch,
+                obs_decoded=obs_decoded,
+                priors=priors,
+                posteriors=posteriors,
+                dec_stddev=cfg['dec_stddev'],
+                free_nats=cfg['free_nats'],
+                beta=cfg['beta']
+            )
+            loss = losses["loss"]
+            print(f"エポック {epoch + 1}/{num_epochs}, バッチ {batch_idx + 1}/{len(train_loader)}, 損失: {loss.item()}")
 
-    def forward(self, s_l_prev, s_l_next):
-        # s_l_prev: 前の潜在状態, s_l_next: 次の潜在状態
-        input_data = torch.cat([s_l_prev, s_l_next], dim=-1)
-        return self.fc(input_data)
+            # 損失を逆伝播
+            loss.backward()
+            optimizer.step()
 
-# Decoder: p(x_t | s_1^t)
-class Decoder(nn.Module):
-    def __init__(self, latent_dim, output_dim):
-        super(Decoder, self).__init__()
-        self.fc = nn.Linear(latent_dim, output_dim)
+        # エポック終了時に検証
+        validate(model, encoder, decoder, val_loader, device, epoch, exp_rootdir)
 
-    def forward(self, s_1):
-        # s_1: 最下位レベルの潜在変数
-        return self.fc(s_1)
+        # チェックポイントを保存
+        checkpoint.save(model, optimizer, epoch)
+        print(f"エポック {epoch + 1} でモデルを保存しました。")
 
-# モデルのサイズ設定
-input_dim = 128  # 入力画像の特徴量次元
-hidden_dim = 64  # エンコーダの隠れ層次元
-latent_dim = 32  # 潜在変数の次元
-output_dim = 128  # デコーダの出力次元 (再構成された画像の特徴量次元)
+    print("トレーニングが完了しました。")
 
-# モデルインスタンスの作成
-encoder = Encoder(input_dim, hidden_dim)
-posterior_transition = PosteriorTransition(latent_dim, hidden_dim)
-prior_transition = PriorTransition(latent_dim)
-decoder = Decoder(latent_dim, output_dim)
+# 検証関数
+def validate(model, encoder, decoder, val_loader, device, epoch, exp_rootdir):
+    model.eval()
+    val_losses = []
+    with torch.no_grad():
+        for val_batch in val_loader:
+            val_batch = val_batch.to(device)
+            if val_batch.shape[1] > cfg['seq_len']:
+                val_batch = val_batch[:, :cfg['seq_len']]
+            obs_encoded = encoder(val_batch)
+            outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded)
+            obs_decoded = decoder(outputs_bot)[0]
+            val_losses_dict = model.compute_losses(
+                obs=val_batch,
+                obs_decoded=obs_decoded,
+                priors=priors,
+                posteriors=posteriors,
+                dec_stddev=cfg['dec_stddev'],
+                free_nats=cfg['free_nats'],
+                beta=cfg['beta']
+            )
+            val_losses.append(val_losses_dict["loss"].item())
+        print(f"エポック {epoch + 1} の検証損失: {sum(val_losses) / len(val_losses)}")
 
-# サンプルデータ
-x_seq = torch.randn(10, 1, input_dim)  # サンプルシーケンスデータ
-s_l_prev = torch.randn(1, latent_dim)  # 前の潜在状態
-s_l_next = torch.randn(1, latent_dim)  # 次の潜在状態
+# メイン関数
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--logdir", default="./logs", type=str, help="ログディレクトリのパス")
+    parser.add_argument("--datadir", default="./minerl_navigate/", type=str, help="データディレクトリのパス")
+    parser.add_argument("--config", default="./configs/minerl.yml", type=str, help="設定ファイル（YAML）のパス")
+    parser.add_argument("--base-config", default="./configs/base_config.yml", type=str, help="ベース設定ファイルのパス")
+    args = parser.parse_args()
 
-# 各コンポーネントの実行
-e_l = encoder(x_seq)  # エンコーダ出力
-posterior_output = posterior_transition(s_l_prev, s_l_next, e_l)
-prior_output = prior_transition(s_l_prev, s_l_next)
-decoded_output = decoder(s_l_prev)
+    # 設定ファイルの読み込み
+    cfg = tools.read_configs(args.config, args.base_config, datadir=args.datadir, logdir=args.logdir)
 
-print("Encoder output:", e_l)
-print("Posterior transition output:", posterior_output)
-print("Prior transition output:", prior_output)
-print("Decoder output:", decoded_output)
+    # デバイス設定
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    cfg['device'] = device
+
+    # データセットの読み込み
+    train_loader, val_loader = load_dataset(cfg['datadir'], cfg['batch_size'])
+
+    # モデルの構築
+    model_components = build_model(cfg)
+    model = model_components["meta"]["model"]
+    encoder = model_components["training"]["encoder"]
+    decoder = model_components["training"]["decoder"]
+
+    # オプティマイザの設定
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg['lr'])
+
+    # 実験用ディレクトリの設定
+    exp_rootdir = os.path.join(cfg['logdir'], f"cwvae_experiment_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(exp_rootdir, exist_ok=True)
+
+    # モデルのトレーニング
+    train(cfg, train_loader, val_loader, model, encoder, decoder, optimizer, exp_rootdir, cfg['num_epochs'])
+
+    # 予測の出力
+    print("予測を開始します。")
+    model.eval()
+    with torch.no_grad():
+        for i, val_batch in enumerate(val_loader):
+            if i >= 1:  # 最初のバッチのみを使用
+                break
+            val_batch = val_batch.to(device)
+            obs_encoded = encoder(val_batch)
+            outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded)
+            obs_decoded = decoder(outputs_bot)[0]
+            
+            # 予測結果を保存
+            output_dir = os.path.join(exp_rootdir, f"predictions_batch_{i}")
+            os.makedirs(output_dir, exist_ok=True)
+            tools.save_as_grid(obs_decoded, output_dir, "predictions.png")
+            print(f"予測結果を {output_dir} に保存しました。")
