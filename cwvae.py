@@ -93,10 +93,12 @@ class CWVAE(nn.Module):
         embed = self.stoch_to_embed(prior_multistep)  # [B, T, embed_size]
         decoded = self.decoder(embed)  # [B, T, C, H, W]
         return decoded
-
+    
+    # 階層的（レベルごと）に情報を伝えながら、予測を進めていく部分
     def hierarchical_unroll(self, inputs, actions=None, use_observations=None, initial_state=None):
         level_top = self._levels - 1
 
+        # initial_state が最初に与えられない場合は、各レベルに対してNoneを設定します。これは「まだ何もない状態」を表します。
         if initial_state is None:
             initial_state = [None] * self._levels
 
@@ -173,14 +175,20 @@ class CWVAE(nn.Module):
             posterior_list.insert(0, posterior)
 
         output_bot_level = context
+        # 最も下のレベルの出力（output_bot_level）と、すべてのレベルの状態、事前と事後の情報をまとめて返す
         return output_bot_level, last_state_all_levels, prior_list, posterior_list
 
+    # 最初の部分だけを見てその後を予測する部分
     def open_loop_unroll(self, inputs, ctx_len, actions=None, use_observations=None, initial_state=None):
         if use_observations is None:
             use_observations = [True] * self._levels  # use_observationsがNoneの場合、すべてのレベルでTrueを使用
 
+        # 最初に見る部分の長さです。たとえば、最初の10フレームを見るなら、ctx_lenは10になる
+        # ctx_len_backupにバックアップを取る
         ctx_len_backup = ctx_len
+        # 見た部分（コンテキスト）
         pre_inputs = []
+        # まだ見ていない部分
         post_inputs = []
         for lvl in range(self._levels):
             pre_inputs.append(inputs[lvl][:, :ctx_len, :])
@@ -188,33 +196,46 @@ class CWVAE(nn.Module):
             ctx_len = ctx_len // self._tmp_abs_factor
         ctx_len = ctx_len_backup
 
+        # actions_preは「見た部分」に対応するアクション
+        # actions_postは「予測する部分」に対応するアクション
         actions_pre = actions_post = None
         if actions is not None:
             actions_pre = actions[:, :ctx_len, :]
-            actions_post = actions[:, ctx_len:, :]
+            actions_post = actions[:, ctx_len:, :] # コンテキスト部分の後から最後までの時間のデータを取り出す
 
+        # コンテキストを使った最初の予測
         _, pre_last_state_all_levels, pre_priors, pre_posteriors = self.hierarchical_unroll(
             pre_inputs, actions=actions_pre, use_observations=use_observations, initial_state=initial_state
         )
+        # 学んだことを使って、見ていない部分を予測する
         outputs_bot_level, _, post_priors, _ = self.hierarchical_unroll(
             post_inputs, actions=actions_post, use_observations=[False] * self._levels, initial_state=pre_last_state_all_levels
         )
+        # pre_posteriorsとpre_priorsは、最初に見た部分に基づく結果です。
+        # post_priorsは、その後の予測部分の結果です。
+        # outputs_bot_levelは、予測の最終的な出力（例えば、動画の後半部分）
         return pre_posteriors, pre_priors, post_priors, outputs_bot_level
 
+    # 観察されたデータ（サンプル）と予測されたデータの違いを計算するためのもの
     def _log_prob_obs(self, samples, mean, stddev):
         """
         Returns the log probability of the observed samples under a normal distribution
         defined by the mean and stddev.
         """
-        mvn = dist.Normal(mean, stddev)
-        log_prob = mvn.log_prob(samples)  # ログ確率を計算
+        mvn = dist.Normal(mean, stddev) # mean（予測された平均）とstddev（予測のばらつき）を使って、正規分布（ベル曲線のような形）を作る
+        log_prob = mvn.log_prob(samples)  # samples（実際の画像）が、この正規分布にどれくらい似ているかを計算
         return log_prob.sum(dim=[-3, -2, -1])  # 各ピクセルのログ確率を合計して返す
 
+    # 2つの「ガウス分布（正規分布）」の間の違いを計算して、それを数値で表している
     def _gaussian_KLD(self, dist1, dist2):
+        # dist1の「平均」と「標準偏差」を使って、mvn1というガウス分布を作る
         mvn1 = dist.Normal(dist1["mean"], dist1["stddev"])
+        # dist2の「平均」と「標準偏差」を使って、mvn2というガウス分布を作る
         mvn2 = dist.Normal(dist2["mean"], dist2["stddev"])
+        # 計算したKLダイバージェンスを全部足し合わせる
         return dist.kl_divergence(mvn1, mvn2).sum(dim=-1)
 
+    # 損失（ロス）を計算する関数
     def compute_losses(self, obs, obs_decoded, priors, posteriors, dec_stddev=0.1, kl_grad_post_perc=None, free_nats=None, beta=None):
         # dec_stddev をテンソルに変換
         if isinstance(dec_stddev, (int, float)):
@@ -252,13 +273,15 @@ class CWVAE(nn.Module):
             "kld_all_levels": kld_all_levels
         }
 
+# 動画の中で、時間が進むごとにどんな変化が起きていくか」を計算するための仕組みを作っている
+# 時間ごとに少しずつ変わるものを計算して、それを集める役割
 def manual_scan(cell, obs_inputs, context, reset_state, use_observation, initial):
     priors = []
     posteriors = []
     prev_out = {"state": initial}
     seq_len = obs_inputs.size(1)
 
-    for t in range(seq_len):
+    for t in range(seq_len): # seq_lenは、時間の長さ
         inputs = (
             obs_inputs[:, t],
             context[:, t],

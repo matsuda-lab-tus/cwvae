@@ -2,31 +2,39 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class RSSMCell(nn.Module):
+# 「再帰型状態空間モデル（Recurrent State Space Model）」のセル
+# 時間とともに変化するデータ（例えば、ビデオのフレームやセンサーのデータ）を処理するのに使われます。
+# セルは過去の情報を覚えておき、新しい情報と組み合わせて次の予測を行います。
+class RSSMCell(nn.Module): # nn.Module は、ニューラルネットワークの基本的な部品を表すPyTorchのクラス
     def __init__(
         self,
-        stoch_size,
-        deter_size,
-        embed_size,
-        obs_embed_size,  # 追加された引数
-        reset_states=False,
-        min_stddev=0.0001,
-        mean_only=False,
+        stoch_size, # ランダムな部分（確率的な部分）のサイズ。
+        deter_size, # 決定的な部分（確実な部分）のサイズ。
+        embed_size, # データを変換する際の埋め込みサイズ。
+        obs_embed_size, # 観測データを埋め込むためのサイズ。
+        reset_states=False, # 状態をリセットするかどうか。
+        min_stddev=0.0001, # 標準偏差の最小値。
+        mean_only=False, # 平均値だけを使うかどうか。
     ):
         super(RSSMCell, self).__init__()
         self._state_size = stoch_size
         self._detstate_size = deter_size
         self._embed_size = embed_size
-        self._obs_embed_size = obs_embed_size  # 追加された属性
+        self._obs_embed_size = obs_embed_size  
 
         self._min_stddev = min_stddev
         self._mean_only = mean_only
         self._reset_states = reset_states
 
         # 決定論的部分のためのGRUセル
+        # GRU（Gated Recurrent Unit）セルを定義しています。
+        # GRUは、データの時間的な依存関係を学ぶためのツールです。
+        # ここでは、データを決定的に処理する部分に使われます。
         self._cell = nn.GRUCell(input_size=self._embed_size, hidden_size=self._detstate_size)
 
         # Prior（事前分布）のための全結合層
+        # 事前分布（モデルが予測する前の状態）の計算に使われる全結合層（線形変換）
+        # 前の状態とコンテキスト（周囲の情報）を組み合わせて、新しい状態を予測する
         self.prior_h1_dense = nn.Linear(
             self._state_size + self._detstate_size, self._embed_size
         )
@@ -35,9 +43,12 @@ class RSSMCell(nn.Module):
         self.prior_stddev_dense = nn.Linear(self._embed_size, self._state_size)
 
         # 観測入力のための埋め込み層
+        # 観測データ（実際に観測したデータ）を処理するための全結合層
         self.obs_embed_dense = nn.Linear(4096, self._embed_size)  # 入力サイズは4096
 
         # Posterior（事後分布）のための全結合層
+        # 事後分布（観測後の状態）の計算に使われる全結合層です。
+        # 観測データと事前分布を組み合わせて、新しい状態を予測します。
         self.posterior_h1_dense = nn.Linear(
             self._detstate_size + self._embed_size, self._embed_size
         )
@@ -45,7 +56,10 @@ class RSSMCell(nn.Module):
         self.posterior_mean_dense = nn.Linear(self._embed_size, self._state_size)
         self.posterior_stddev_dense = nn.Linear(self._embed_size, self._state_size)
 
-    def forward(self, prev_out, inputs, use_observation):
+    # 前の状態と新しい入力（観測データやコンテキスト）を使って事前分布を計算。
+    # 観測データがあれば、事後分布を計算。
+    # 新しい状態を更新。
+    def forward(self, prev_out, inputs, use_observation): 
         """
         前の出力と現在の入力を受け取り、事前分布と事後分布を計算します。
         
@@ -153,7 +167,7 @@ class RSSMCell(nn.Module):
             "output": torch.cat([sample, det_state], dim=-1),
         }
 
-    def zero_state(self, batch_size, device):
+    def zero_state(self, batch_size, device): # ゼロから始めるための初期状態を作成
         """
         初期状態をゼロで設定します。
         
@@ -169,7 +183,7 @@ class RSSMCell(nn.Module):
             "det_state": torch.zeros(batch_size, self._detstate_size).to(device)
         }
 
-    def init_weights(self, module):
+    def init_weights(self, module): # モデルが学習を始めやすいように重みを初期化
         """
         モジュールの重みを初期化します。
         
