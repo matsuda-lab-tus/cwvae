@@ -81,7 +81,7 @@ if __name__ == "__main__":
     model = model_components["meta"]["model"]
 
     # チェックポイントのロード
-    checkpoint_path = "/home/yamada_24/cwvae/logs/minerl_cwvae_20241019_171143/checkpoint_epoch_11.pth"
+    checkpoint_path = "/home/yamada_24/cwvae/logs/minerl_cwvae_20241019_171143/model/model.pth"
     if os.path.exists(checkpoint_path):
         print(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)
