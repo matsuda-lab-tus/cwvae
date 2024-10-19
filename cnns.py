@@ -151,7 +151,7 @@ class Decoder(nn.Module):
         print(f"[DEBUG] Input to Decoder: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         # Reshape for fc layer
-        x = x.view(batch_size * timesteps, embed_size)
+        x = x.reshape(batch_size * timesteps, embed_size)
         print(f"[DEBUG] After reshaping for fc layer: {x.shape}, min: {x.min()}, max: {x.max()}")
 
         # Pass through fully connected layer

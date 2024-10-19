@@ -8,6 +8,7 @@ from data_loader import load_dataset
 import tools
 import wandb
 from datetime import datetime  # 終了時間の取得に使用
+from data_loader import transform  # データセットの変換関数のインポート
 
 # Checkpointクラスのインポート
 from loggers.checkpoint import Checkpoint
@@ -29,7 +30,7 @@ if __name__ == "__main__":
     wandb.init(project="CW-VAE", config=cfg)
 
     # デバイスの設定
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     cfg['device'] = device
 
     # わかりやすい名前を使用した保存ディレクトリの設定
@@ -44,8 +45,9 @@ if __name__ == "__main__":
     with open(os.path.join(exp_rootdir, "config.yml"), "w") as f:
         yaml.dump(cfg, f, default_flow_style=False)
 
+
     # データセットをロード
-    train_loader, val_loader = load_dataset(cfg['datadir'], cfg['batch_size'])
+    train_loader, val_loader = load_dataset(cfg['datadir'], cfg['batch_size'], transform=transform)
 
     # モデルの構築
     model_components = build_model(cfg)

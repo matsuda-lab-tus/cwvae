@@ -1,12 +1,11 @@
 import yaml
 from pathlib import Path
+import torch
+from torch import nn
 import numpy as np
 import imageio
 import os
 import matplotlib.pyplot as plt
-import torch
-from torch import nn
-from torch.autograd import Variable
 from skimage.metrics import structural_similarity as ssim_metric
 from skimage.metrics import peak_signal_noise_ratio as psnr_metric
 from torchvision.utils import save_image
@@ -78,14 +77,24 @@ def read_configs(config_path, base_config_path=None, **kwargs):
         pass
 
     def torch_device_constructor(loader, node):
-        sequence = loader.construct_sequence(node)
-        if isinstance(sequence, list) and len(sequence) == 1:
-            return torch.device(sequence[0])
-        else:
-            raise ValueError(f"Invalid sequence format for torch.device: {sequence}")
+        # 文字列形式（スカラーノード）を処理
+        if isinstance(node, yaml.ScalarNode):
+            device_str = loader.construct_scalar(node)
+            return torch.device(device_str)
+        # リスト形式（シーケンスノード）を処理
+        elif isinstance(node, yaml.SequenceNode):
+            sequence = loader.construct_sequence(node)
+            if isinstance(sequence, list) and len(sequence) == 2 and sequence[0] == 'cuda':
+                return torch.device(f'cuda:{sequence[1]}')
+        # どちらでもない場合はエラー
+        raise ValueError(f"Invalid format for torch.device: {loader.construct_object(node)}")
 
-    # Register custom tag to read torch.device from YAML
-    TorchDeviceLoader.add_constructor('tag:yaml.org,2002:python/object/apply:torch.device', torch_device_constructor)
+    def attrdict_constructor(loader, node):
+        return AttrDict(loader.construct_mapping(node, deep=True))
+
+    # カスタムコンストラクターの登録
+    TorchDeviceLoader.add_constructor('!torch.device', torch_device_constructor)
+    TorchDeviceLoader.add_constructor('!attrdict', attrdict_constructor)
 
     if base_config_path is not None:
         base_config = yaml.safe_load(Path(base_config_path).read_text())
@@ -182,69 +191,10 @@ def plot_metrics(mean_metric, std_metric, logdir, metric_name):
     plt.savefig(os.path.join(logdir, f"{metric_name}.png"))
     plt.close()
 
-def save_as_grid(images, path, filename, nrow=8):
-    """
-    Saves a batch of images as a grid.
-    """
-    if isinstance(images, np.ndarray):
-        images = torch.from_numpy(images).float() / 255.0  # Convert NumPy array to PyTorch tensor and normalize
-    elif isinstance(images, torch.Tensor):
-        images = images.float() / 255.0
-    else:
-        raise TypeError(f"Unsupported type for images: {type(images)}")
+from torchvision.utils import save_image
 
-    if images.ndimension() == 3:
-        images = images.unsqueeze(0)  # Add batch dimension if needed
-    
-    print(f"[DEBUG] save_as_grid - images shape: {images.shape}, min: {images.min().item()}, max: {images.max().item()}")
-
-    save_path = os.path.join(path, filename)
-    print(f"[DEBUG] Saving image grid to: {save_path}")
-
+def save_as_grid(images, full_save_path, nrow=8):
     try:
-        save_image(images, save_path, nrow=nrow)
-        print(f"[INFO] Image grid saved successfully to: {save_path}")
+        save_image(images, full_save_path, nrow=nrow)
     except Exception as e:
-        print(f"[ERROR] Failed to save image grid to {save_path}: {e}")
-        import traceback
-        traceback.print_exc()
-
-def read_configs(config_path, base_config_path=None, **kwargs):
-    """
-    Reads and parses the configuration files (YAML format) and returns a configuration dictionary.
-    """
-    class TorchDeviceLoader(yaml.SafeLoader):
-        pass
-
-    def torch_device_constructor(loader, node):
-        sequence = loader.construct_sequence(node)
-        if isinstance(sequence, list) and len(sequence) == 1:
-            return torch.device(sequence[0])
-        else:
-            raise ValueError(f"Invalid sequence format for torch.device: {sequence}")
-
-    def attrdict_constructor(loader, node):
-        return AttrDict(loader.construct_mapping(node, deep=True))
-
-    # Register custom tag to read torch.device and AttrDict from YAML
-    TorchDeviceLoader.add_constructor('tag:yaml.org,2002:python/object/apply:torch.device', torch_device_constructor)
-    TorchDeviceLoader.add_constructor('tag:yaml.org,2002:python/object/new:tools.AttrDict', attrdict_constructor)
-
-    if base_config_path is not None:
-        base_config = yaml.safe_load(Path(base_config_path).read_text())
-        config = base_config.copy()
-        config.update(yaml.load(Path(config_path).read_text(), Loader=TorchDeviceLoader))
-        assert len(set(config).difference(base_config)) == 0, "Found new keys in config. Make sure to set them in base_config first."
-    else:
-        with open(config_path, "r") as f:
-            config = yaml.load(f, Loader=TorchDeviceLoader)
-
-    config = AttrDict(config)
-
-    if kwargs.get("datadir", None) is not None:
-        config.datadir = kwargs["datadir"]
-    if kwargs.get("logdir", None) is not None:
-        config.logdir = kwargs["logdir"]
-
-    validate_config(config)
-    return config
+        print(f"[ERROR] Failed to save image grid to {full_save_path}: {str(e)}")

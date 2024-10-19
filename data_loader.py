@@ -70,8 +70,15 @@ class VideoDataset(Dataset):
         video = np.stack(frames, axis=0)
         return video
 
+# 画像データの正規化を含むトランスフォーム
+transform = transforms.Compose([
+    transforms.Resize((64, 64)),  # 画像を64x64にリサイズ
+    transforms.ToTensor(),  # [0, 255]のピクセル値を[0, 1]にスケーリング
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # 正規化を適用して[-1, 1]にスケーリング
+])
 
-def load_dataset(datadir, batch_size, transform=None):
+
+def load_dataset(datadir, batch_size, transform=transform):
     """
     動画データセットをロードし、DataLoaderを返す。
 
@@ -93,7 +100,7 @@ def load_dataset(datadir, batch_size, transform=None):
 
     # DataLoaderの作成
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
 
     return train_loader, test_loader
 

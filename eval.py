@@ -72,7 +72,7 @@ def save_intermediate_outputs(intermediate_outputs, save_dir, sample_id):
             print(f"[ERROR] Failed to save {name} as image: {e}")
             continue
 
-if __name__ == "__main__":
+if __name__ == "__main__": # プログラムを動かすための設定
     parser = argparse.ArgumentParser()
     parser.add_argument("--logdir", default="/home/yamada_24/cwvae/logs/minerl_cwvae_20241017_145429/model", type=str, help="モデルのチェックポイントが保存されているディレクトリのパス")
     parser.add_argument("--num-examples", default=10, type=int, help="評価するサンプル数")
@@ -90,6 +90,7 @@ if __name__ == "__main__":
     exp_rootdir = str(pathlib.Path(args.logdir).resolve().parent)
     eval_logdir = os.path.join(exp_rootdir, "eval_{}".format(datetime.now().strftime("%Y_%m_%d_%H_%M_%S")))
     os.makedirs(eval_logdir, exist_ok=True)
+
     cfg = tools.read_configs(os.path.join(exp_rootdir, "config.yml"))
     cfg.batch_size = 1
     cfg.open_loop_ctx = args.open_loop_ctx
@@ -163,13 +164,14 @@ if __name__ == "__main__":
                     obs_full_level = torch.cat([obs_context_level, obs_future_level], dim=1)
                     obs_encoded_full.append(obs_full_level)
 
+                # AIが予測した未来をデコードする
                 outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_full)
                 outputs_bot_future = outputs_bot[:, args.open_loop_ctx:]
-
                 preds, intermediate_outputs = decoder(outputs_bot_future)
                 save_dir = os.path.join(eval_logdir, f"sample{i_ex}_intermediate_outputs")
-                save_intermediate_outputs(intermediate_outputs, save_dir, sample_id=i_ex)
 
+                # 予測した結果を保存する
+                save_intermediate_outputs(intermediate_outputs, save_dir, sample_id=i_ex)
                 preds_np = np.squeeze(preds.cpu().numpy(), axis=0)
                 future_frames_gt_np = np.squeeze(future_frames_gt.cpu().numpy(), axis=0)
 
@@ -211,6 +213,9 @@ if __name__ == "__main__":
                 import traceback
                 traceback.print_exc()  
 
+    # AIの予測がどれだけ正確かをチェックする
+    # SSIM（構造類似度指数）は、画像の構造がどれだけ似ているかを示します。
+    # PSNR（ピーク信号対雑音比）は、画像の明るさがどれだけ近いかを測るものです。
     if ssim_all and psnr_all:
         ssim_all = np.array(ssim_all)
         psnr_all = np.array(psnr_all)
@@ -227,6 +232,7 @@ if __name__ == "__main__":
         mean_psnr = np.squeeze(mean_psnr)
         std_psnr = np.squeeze(std_psnr)
 
+        # 予測の結果をグラフで可視化
         plt.fill_between(x, mean_ssim - std_ssim, mean_ssim + std_ssim, alpha=0.2)
         plt.plot(x, mean_ssim, label="SSIM", color="blue")
         plt.xlabel("Frame")
