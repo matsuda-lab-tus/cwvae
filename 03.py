@@ -21,10 +21,9 @@ def predict(model, cfg, dataloader, output_dir):
         for batch_idx, data_batch in enumerate(dataloader):
             data_batch = data_batch.to(device)
 
-            # データの長さをcfg['seq_len']に合わせる
-            if data_batch.shape[1] > cfg['seq_len']:
-                data_batch = data_batch[:, :cfg['seq_len']]
-
+            obs = data_batch  # obsをtrain_batchに置き換え
+            
+            obs = obs.view(-1, 100, 3, 64, 64)
             # エンコーダーを通して特徴を抽出
             obs_encoded = model.encoder(data_batch)
 
@@ -70,7 +69,7 @@ if __name__ == "__main__":
     cfg = tools.read_configs(args.config, args.base_config, datadir=args.datadir, logdir=args.logdir)
 
     # デバイスの設定
-    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     cfg['device'] = device
 
     # データセットをロード（validation dataを使用）
@@ -81,7 +80,7 @@ if __name__ == "__main__":
     model = model_components["meta"]["model"]
 
     # チェックポイントのロード
-    checkpoint_path = "/home/yamada_24/cwvae/logs/minerl_cwvae_20241019_190635/model/model.pth"
+    checkpoint_path = "/home/yamada_24/cwvae/logs/minerl_cwvae_20241020_021430/model/model.pth"
     if os.path.exists(checkpoint_path):
         print(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)

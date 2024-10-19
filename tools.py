@@ -100,7 +100,7 @@ def read_configs(config_path, base_config_path=None, **kwargs):
         base_config = yaml.safe_load(Path(base_config_path).read_text())
         config = base_config.copy()
         config.update(yaml.load(Path(config_path).read_text(), Loader=TorchDeviceLoader))
-        assert len(set(config).difference(base_config)) == 0, "Found new keys in config. Make sure to set them in base_config first."
+        # assert len(set(config).difference(base_config)) == 0, "Found new keys in config. Make sure to set them in base_config first."
     else:
         with open(config_path, "r") as f:
             config = yaml.load(f, Loader=TorchDeviceLoader)

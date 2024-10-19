@@ -30,7 +30,7 @@ class VideoDataset(Dataset):
         reader = imageio.get_reader(video_path, 'ffmpeg')
         frames = [frame for frame in reader]
         reader.close()
-        
+
         # 動画を (time, height, width, channels) の形で取得
         video = np.stack(frames, axis=0)
         return video
@@ -58,6 +58,7 @@ class VideoDataset(Dataset):
         video_tensor = torch.stack(frames)  # [num_sequences * seq_len, channels, height, width]
         video_tensor = video_tensor.view(num_sequences, self.seq_len, *video_tensor.shape[1:])  # [num_sequences, seq_len, channels, height, width]
 
+        # 最終的な形状: [num_sequences, seq_len, channels, height, width]
         return video_tensor
 
 
@@ -77,7 +78,7 @@ def load_dataset(datadir, batch_size, seq_len=100, transform=transform):
     test_dataset = VideoDataset(video_dir=test_dir, seq_len=seq_len, transform=transform)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
     return train_loader, test_loader
 
@@ -91,7 +92,6 @@ def test_data_loader(datadir, batch_size):
         print(f"Batch {batch_idx + 1}:")
         print(f"Data shape: {data.shape}")  # データの形状を確認
 
-        # ここでデータの内容を表示することもできます
         if batch_idx == 2:  # 3バッチ分だけ確認
             break
 

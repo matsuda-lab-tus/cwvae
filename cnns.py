@@ -39,8 +39,8 @@ class Encoder(nn.Module):
             self.level_dense_layers.append(level_layers)
 
     def forward(self, obs):
-        batch_size, timesteps, channels, height, width = obs.size()
-        obs = obs.reshape(batch_size * timesteps, channels, height, width)
+        batch_size, seq_len, channels, height, width = obs.size()
+        obs = obs.reshape(batch_size * seq_len, channels, height, width)
 
         # Convolutional layers processing
         hidden = self.activation(self.conv1(obs))
@@ -48,7 +48,7 @@ class Encoder(nn.Module):
         hidden = self.activation(self.conv3(hidden))
         hidden = self.activation(self.conv4(hidden))
 
-        hidden = hidden.view(batch_size, timesteps, -1)  # Flatten convolutional output
+        hidden = hidden.view(batch_size, seq_len, -1)  # Flatten convolutional output
         layer = hidden
 
         layers = []

@@ -86,12 +86,9 @@ if __name__ == "__main__":
             # obsをtrain_batchに置き換え
             obs = train_batch  # obsをtrain_batchに置き換え
 
-            # 形状を調整
-            # ここで、obsのサイズを調整して、obs_decodedに合わせます
-            if obs.size(1) == 5:  # フレーム数が5の場合
-                obs = obs.view(-1, 100, 3, 64, 64)  # バッチサイズを合わせる
-            else:
-                raise ValueError("Unexpected input shape: {}".format(obs.shape))
+            # 元の形状: [16, 5, 100, 3, 64, 64]
+            # 必要な形状: [16 * 5, 100, 3, 64, 64]
+            obs = obs.view(-1, 100, 3, 64, 64)  # バッチサイズを合わせる
 
             optimizer.zero_grad()
             obs_encoded = encoder(obs)
@@ -104,11 +101,12 @@ if __name__ == "__main__":
 
             # 損失の計算
             losses = model.compute_losses(
-                obs=train_batch,
+                obs=train_batch.view(-1, 100, 3, 64, 64),
                 obs_decoded=obs_decoded,
                 priors=priors,
                 posteriors=posteriors,
                 dec_stddev=cfg['dec_stddev'],
+                kl_grad_post_perc=cfg['kl_grad_post_perc'],
                 free_nats=cfg['free_nats'],
                 beta=cfg['beta']
             )
@@ -120,7 +118,6 @@ if __name__ == "__main__":
 
             loss.backward()
             
-            # 勾配クリッピングの実施（必要な場合）
             if cfg['clip_grad_norm_by'] is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), cfg['clip_grad_norm_by'])
             
@@ -132,35 +129,44 @@ if __name__ == "__main__":
         model.eval()
         with torch.no_grad():
             val_losses = []
-            for val_batch in val_loader:
+            for batch_idx, val_batch in enumerate(val_loader):
                 val_batch = val_batch.to(device)
 
+                obs2 = val_batch
                 # val_batch をエンコーダが受け入れる形式に変換
-                adjusted_val_batch = val_batch.view(-1, 100, 3, 64, 64)  # [バッチサイズ * シーケンス数, フレーム数, チャネル数, 高さ, 幅]
+                # 元の形状: [16, 5, 100, 3, 64, 64]
+                # 必要な形状: [16 * 5, 100, 3, 64, 64]
+                adjusted_val_batch = obs2.view(-1, 100, 3, 64, 64)  # [バッチサイズ * シーケンス数, フレーム数, チャネル数, 高さ, 幅]
 
                 val_obs_encoded = encoder(adjusted_val_batch)
+
                 val_outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded)
-                val_decoder_output = decoder(val_outputs_bot)
+                obs2_decoded = model.decoder(val_outputs_bot)[0]
 
-                # デコーダーの出力がタプルの場合、最初の要素を使用する
-                if isinstance(val_decoder_output, tuple):
-                    val_obs_decoded = val_decoder_output[0]
-                else:
-                    val_obs_decoded = val_decoder_output
-                print(f"val_obs_decoded shape: {val_obs_decoded.shape}")
+                # # デコーダーの出力がタプルの場合、最初の要素を使用する
+                # if isinstance(val_decoder_output, tuple):
+                #     val_obs_decoded = val_decoder_output[0]
+                # else:
+                #     val_obs_decoded = val_decoder_output
+                # print(f"val_obs_decoded shape: {val_obs_decoded.shape}")
 
+                # 形状を確認
+                print(f"obs2 shape: {obs2.shape}, obs_decoded shape: {obs2_decoded.shape}")
+            
                 val_losses_dict = model.compute_losses(
-                    obs=val_batch,
-                    obs_decoded=val_obs_decoded,
+                    obs=val_batch.view(-1, 100, 3, 64, 64),
+                    obs_decoded=obs2_decoded,
                     priors=val_priors,
                     posteriors=val_posteriors,
                     dec_stddev=cfg['dec_stddev'],
+                    kl_grad_post_perc=cfg['kl_grad_post_perc'],
                     free_nats=cfg['free_nats'],
                     beta=cfg['beta']
                 )
                 val_loss = val_losses_dict["loss"].item()
                 val_losses.append(val_loss)
                 print(f"Validation Loss for current batch: {val_loss}")
+
             average_val_loss = sum(val_losses) / len(val_losses)
             wandb.log({"val_loss": average_val_loss, "epoch": epoch})
             model.train()

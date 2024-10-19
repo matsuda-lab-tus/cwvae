@@ -29,8 +29,7 @@ num_epochs: 300
 kl_grad_post_perc: null
 free_nats: null
 beta: null
-clip_grad_norm_by: 10
-# max_steps: 600000 
+clip_grad_norm_by: 10000
 
 # SUMMARIES
 logdir: null
