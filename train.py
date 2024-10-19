@@ -30,7 +30,7 @@ if __name__ == "__main__":
     wandb.init(project="CW-VAE", config=cfg)
 
     # デバイスの設定
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
     cfg['device'] = device
 
     # わかりやすい名前を使用した保存ディレクトリの設定
@@ -45,9 +45,8 @@ if __name__ == "__main__":
     with open(os.path.join(exp_rootdir, "config.yml"), "w") as f:
         yaml.dump(cfg, f, default_flow_style=False)
 
-
     # データセットをロード
-    train_loader, val_loader = load_dataset(cfg['datadir'], cfg['batch_size'], transform=transform)
+    train_loader, val_loader = load_dataset(cfg['datadir'], cfg['batch_size'], seq_len=cfg['seq_len'], transform=transform)
 
     # モデルの構築
     model_components = build_model(cfg)
@@ -78,31 +77,31 @@ if __name__ == "__main__":
     step = 0
     num_epochs = cfg['num_epochs']
 
+    # トレーニングループ内の変更部分
     for epoch in range(start_epoch, num_epochs):
         model.train()
-        for batch_idx, train_batch in enumerate(train_loader):  # DataLoaderからバッチを取得
-            print(f"Epoch [{epoch + 1}/{num_epochs}] - Batch [{batch_idx + 1}/{len(train_loader)}]")
-            train_batch = train_batch.to(device)  # デバイスに送る（GPU or CPU）
+        for batch_idx, train_batch in enumerate(train_loader):
+            train_batch = train_batch.to(device)
 
-            # train_batch のシーケンス長を cfg['seq_len'] に揃える
-            if train_batch.shape[1] > cfg['seq_len']:
-                train_batch = train_batch[:, :cfg['seq_len']]
+            # obsをtrain_batchに置き換え
+            obs = train_batch  # obsをtrain_batchに置き換え
 
-            # train_batch の次元チェック
-            print(f"train_batch shape after slicing: {train_batch.shape}")
-            
+            # 形状を調整
+            # ここで、obsのサイズを調整して、obs_decodedに合わせます
+            if obs.size(1) == 5:  # フレーム数が5の場合
+                obs = obs.view(-1, 100, 3, 64, 64)  # バッチサイズを合わせる
+            else:
+                raise ValueError("Unexpected input shape: {}".format(obs.shape))
+
             optimizer.zero_grad()
-            
-            # エンコーダーを通して特徴量を抽出
-            obs_encoded = encoder(train_batch)
+            obs_encoded = encoder(obs)
 
-            # モデルの出力を取得
             outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded)
-            
-            # デコーダーを通して生成画像を得る
             obs_decoded = model.decoder(outputs_bot)[0]
-            print(f"obs_decoded: {obs_decoded}")
-            
+
+            # 形状を確認
+            print(f"obs shape: {obs.shape}, obs_decoded shape: {obs_decoded.shape}")
+
             # 損失の計算
             losses = model.compute_losses(
                 obs=train_batch,
@@ -135,9 +134,11 @@ if __name__ == "__main__":
             val_losses = []
             for val_batch in val_loader:
                 val_batch = val_batch.to(device)
-                if val_batch.shape[1] > cfg['seq_len']:
-                    val_batch = val_batch[:, :cfg['seq_len']]
-                val_obs_encoded = encoder(val_batch)
+
+                # val_batch をエンコーダが受け入れる形式に変換
+                adjusted_val_batch = val_batch.view(-1, 100, 3, 64, 64)  # [バッチサイズ * シーケンス数, フレーム数, チャネル数, 高さ, 幅]
+
+                val_obs_encoded = encoder(adjusted_val_batch)
                 val_outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded)
                 val_decoder_output = decoder(val_outputs_bot)
 
@@ -146,7 +147,7 @@ if __name__ == "__main__":
                     val_obs_decoded = val_decoder_output[0]
                 else:
                     val_obs_decoded = val_decoder_output
-                print(f"val_obs_decoded: {val_obs_decoded}")
+                print(f"val_obs_decoded shape: {val_obs_decoded.shape}")
 
                 val_losses_dict = model.compute_losses(
                     obs=val_batch,
