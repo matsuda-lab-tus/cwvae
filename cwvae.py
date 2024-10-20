@@ -1,9 +1,11 @@
+# 必要なライブラリをインポートします
 import torch
 import torch.nn as nn
 import torch.distributions as dist
-from cnns import Encoder, Decoder
-from cells import RSSMCell
+from cnns import Encoder, Decoder  # エンコーダーとデコーダーを使うためにインポート
+from cells import RSSMCell  # 状態を表すセルをインポート
 
+# CWVAEという新しいクラスを定義します。このクラスはnn.Moduleから継承します。
 class CWVAE(nn.Module):
     def __init__(
         self,
@@ -33,7 +35,7 @@ class CWVAE(nn.Module):
         self._reset_states = reset_states
         self.device = device
 
-        # エンコーダーとデコーダーの設定
+       # エンコーダーとデコーダーの定義
         self.encoder = Encoder(
             levels,
             tmp_abs_factor,
@@ -49,7 +51,7 @@ class CWVAE(nn.Module):
             final_activation=nn.Tanh(),
         ).to(device)
 
-        # RSSMセルをレベルごとに作成
+       # 各階層のRSSMセルを作成
         self.cells = nn.ModuleList()
         for level in range(self._levels):
             if self._cell_type == 'RSSMCell':
@@ -66,168 +68,138 @@ class CWVAE(nn.Module):
                 raise NotImplementedError(f"Unknown cell type {self._cell_type}")
             self.cells.append(cell)
 
-        # 潜在変数を埋め込み空間に変換する線形層
         self.stoch_to_embed = nn.Linear(self._state_sizes["stoch"], self._embed_size).to(device)
 
+
+    # モデルの重みを初期化する関数です
     def init_weights(self, m):
+        # 線形層の場合、重みをxavierの方法で初期化します
         if isinstance(m, nn.Linear):
             nn.init.xavier_uniform_(m.weight)
             if m.bias is not None:
-                nn.init.zeros_(m.bias)
+                nn.init.zeros_(m.bias)  # バイアスをゼロで初期化
+        # 畳み込み層の場合、kaimingの方法で初期化します
         elif isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
             nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             if m.bias is not None:
-                nn.init.zeros_(m.bias)
-        elif isinstance(m, nn.GRUCell):
-            for name, param in m.named_parameters():
-                if 'weight' in name:
-                    nn.init.kaiming_uniform_(param, nonlinearity='relu')
-                elif 'bias' in name:
-                    nn.init.zeros_(param)
+                nn.init.zeros_(m.bias)  # バイアスをゼロで初期化
 
-    def decode_prior_multistep(self, prior_multistep):
+    def hierarchical_unroll(self, inputs, actions=None, use_observations=None, initial_state=None):
         """
-        prior_multistep: Tensor of shape [batch, steps, stoch_size]
-        Returns: Tensor of shape [batch, steps, channels, height, width]
+        各階層を通じて情報を伝えながら予測を行います。
         """
-        embed = self.stoch_to_embed(prior_multistep)  # [B, T, embed_size]
-        decoded = self.decoder(embed)  # [B, T, C, H, W]
-        return decoded
-    
-    # 階層的（レベルごと）に情報を伝えながら、予測を進めていく部分
-    def hierarchical_unroll(
-            self, inputs, actions=None, use_observations=None, initial_state=None
-        ):
-            level_top = self._levels - 1
+        if use_observations is None:
+            use_observations = [True] * self._levels
+        elif isinstance(use_observations, bool):
+            use_observations = [use_observations] * self._levels
 
-            if initial_state is None:
-                initial_state = [None] * self._levels
+        level_top = self._levels - 1
+        context = torch.zeros(
+            inputs[level_top].size(0), inputs[level_top].size(1), self.cells[-1]._detstate_size, device=inputs[level_top].device
+        )
 
-            if not isinstance(use_observations, list):
-                use_observations = [use_observations] * self._levels
+        prior_list = []
+        posterior_list = []
+        last_state_all_levels = []
 
-            # コンテキストの初期化
-            context = torch.zeros(
-                inputs[level_top].size(0),
-                inputs[level_top].size(1),
-                self.cells[-1]._detstate_size,
-                device=inputs[level_top].device
-            )
+        for level in range(level_top, -1, -1):
+            obs_inputs = inputs[level]
 
-            prior_list = []
-            posterior_list = []
-            last_state_all_levels = []
-
-            for level in range(level_top, -1, -1):
-                obs_inputs = inputs[level]
-
-                # バッチ次元の確認
-                if obs_inputs.size(0) != context.size(0):
-                    obs_inputs = obs_inputs.transpose(0, 1)
-
-                # obs_inputs と context のバッチサイズ確認
-                if obs_inputs.size(0) != context.size(0):
-                    raise ValueError(f"Batch size mismatch at level {level}: obs_inputs.size(0) = {obs_inputs.size(0)}, context.size(0) = {context.size(0)}")
-                print(f"[DEBUG] Level {level}: obs_inputs shape: {obs_inputs.shape}, context shape: {context.shape}")
-
-                # リセット状態の初期化
-                if level == level_top:
-                    reset_state = torch.ones(
-                        obs_inputs.size(0), obs_inputs.size(1), 1, device=obs_inputs.device)
-                else:
-                    reset_state = reset_state.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
-                    reset_state = reset_state.view(
-                        reset_state.size(0),
-                        reset_state.size(1) * self._tmp_abs_factor,
-                        reset_state.size(3)
-                    )
-
-                expected_seq_len = obs_inputs.size(1)  # obs_inputsから期待されるシーケンス長を取得
-
-                # contextのシーケンス長を合わせる
-                if level != level_top:
-                    context = context.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
-                    context = context.view(
-                        context.size(0),
-                        context.size(1) * self._tmp_abs_factor,
-                        context.size(3)
-                    )
-
-                # context の長さを調整
-                context = context[:, :expected_seq_len, :]
-
-                if level == 0 and actions is not None:
-                    context = torch.cat([context, actions], dim=-1)
-
-                initial = self.cells[level].zero_state(obs_inputs.size(0), obs_inputs.device)
-                if initial_state[level] is not None:
-                    initial = initial_state[level]
-
-                prior, posterior, posterior_last_step = manual_scan(
-                    self.cells[level],
-                    obs_inputs,
-                    context,
-                    reset_state,
-                    use_observations[level],  # 各レベルの use_observations を使用
-                    initial,
+            if level == level_top:
+                reset_state = torch.ones(obs_inputs.size(0), obs_inputs.size(1), 1, device=obs_inputs.device)
+            else:
+                reset_state = reset_state.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1).view(
+                    reset_state.size(0), -1, reset_state.size(-1)
+                )
+                context = context.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1).view(
+                    context.size(0), -1, context.size(-1)
                 )
 
-                last_state_all_levels.insert(0, posterior_last_step)
-                context = posterior["det_out"]
+            initial = self.cells[level].zero_state(obs_inputs.size(0), obs_inputs.device)
+            prior, posterior, posterior_last_step = manual_scan(
+                self.cells[level],
+                obs_inputs,
+                context,
+                reset_state,
+                use_observations[level],
+                initial,
+            )
 
-                prior_list.insert(0, prior)
-                posterior_list.insert(0, posterior)
+            last_state_all_levels.insert(0, posterior_last_step)
+            context = posterior["det_out"]
 
-                # Tiling context by a factor of tmp_abs_factor for use at the level below.
-                if level != 0:
-                    context = context.unsqueeze(2)
-                    context = context.repeat(1, 1, self._tmp_abs_factor, 1)
-                    context = context.view(
-                        context.size(0),
-                        context.size(1) * self._tmp_abs_factor,
-                        context.size(3)
-                    )
+            prior_list.insert(0, prior)
+            posterior_list.insert(0, posterior)
 
-            output_bot_level = context
-            print(f"[DEBUG] Output bot level shape before returning: {output_bot_level.shape}")
+        return context, last_state_all_levels, prior_list, posterior_list
 
-            return output_bot_level, last_state_all_levels, prior_list, posterior_list
-    
+    def decode_prior_multistep(self, prior_multistep):
+        embed = self.stoch_to_embed(prior_multistep)
+        decoded = self.decoder(embed)
+        return decoded
+
+    def compute_losses(self, obs, obs_decoded, priors, posteriors, dec_stddev=0.1, kl_grad_post_perc=None, free_nats=None, beta=None):
+        """
+        予測と観察の違いから損失を計算します。
+        """
+        dec_stddev = torch.full_like(obs_decoded, dec_stddev)
+        nll_term = -self._log_prob_obs(obs, obs_decoded, dec_stddev).mean()
+
+        kl_term = torch.tensor(0.0).to(obs.device)
+        kld_all_levels = []
+
+        for i in range(self._levels):
+            kld_level = self._gaussian_KLD(posteriors[i], priors[i])
+            if free_nats is not None:
+                kld_level = torch.clamp(kld_level - free_nats, min=0.0)
+            if beta is not None:
+                kld_level *= beta[i] if isinstance(beta, list) else beta
+            kl_term += kld_level.mean()
+            kld_all_levels.append(kld_level)
+
+        neg_elbo = nll_term + kl_term
+        loss = neg_elbo / obs.size(1)
+
+        return {
+            "loss": loss,
+            "nll_term": nll_term,
+            "kl_term": kl_term,
+            "kld_all_levels": kld_all_levels,
+        }
+    # 観察されたフレームを使って、未来のフレームを予測する関数です
     def open_loop_unroll(self, inputs, ctx_len, actions=None, use_observations=None, initial_state=None):
         if use_observations is None:
-            use_observations = [True] * self._levels  # use_observationsがNoneの場合、すべてのレベルでTrueを使用
+            use_observations = [True] * self._levels  # すべての階層で観察を使う設定
 
-        # 最初に見る部分の長さです。たとえば、最初の10フレームを見るなら、ctx_lenは10になる
-        # ctx_len_backupにバックアップを取る
+        # もともとのコンテキスト長をバックアップします
         ctx_len_backup = ctx_len
-        # 見た部分（コンテキスト）
-        pre_inputs = []
-        # まだ見ていない部分
-        post_inputs = []
-        for lvl in range(self._levels):
-            pre_inputs.append(inputs[lvl][:, :ctx_len, :])
-            post_inputs.append(torch.zeros_like(inputs[lvl][:, ctx_len:, :]))
-            ctx_len = ctx_len // self._tmp_abs_factor
-        ctx_len = ctx_len_backup
+        pre_inputs = []  # 観察データ用のリスト
+        post_inputs = []  # 予測データ用のリスト
 
-        # actions_preは「見た部分」に対応するアクション
-        # actions_postは「予測する部分」に対応するアクション
+        # 各階層ごとに観察部分と予測部分にデータを分けます
+        for lvl in range(self._levels):
+            pre_inputs.append(inputs[lvl][:, :ctx_len, :])  # 観察部分を追加
+            post_inputs.append(torch.zeros_like(inputs[lvl][:, ctx_len:, :]))  # 予測部分をゼロで初期化
+            ctx_len = ctx_len // self._tmp_abs_factor  # 次の階層用に時間を縮めます
+        ctx_len = ctx_len_backup  # バックアップしたコンテキスト長を戻します
+
+        # アクションを観察と予測の部分に分けます
         actions_pre = actions_post = None
         if actions is not None:
             actions_pre = actions[:, :ctx_len, :]
-            actions_post = actions[:, ctx_len:, :] # コンテキスト部分の後から最後までの時間のデータを取り出す
+            actions_post = actions[:, ctx_len:, :]
 
-        # コンテキストを使った最初の予測
+        # 観察データでまず最初の予測を行います
         _, pre_last_state_all_levels, pre_priors, pre_posteriors = self.hierarchical_unroll(
             pre_inputs, actions=actions_pre, use_observations=use_observations, initial_state=initial_state
         )
-        # 学んだことを使って、見ていない部分を予測する
+
+        # 観察した状態を使って、観察なしで未来のフレームを予測します
         outputs_bot_level, _, post_priors, _ = self.hierarchical_unroll(
             post_inputs, actions=actions_post, use_observations=[False] * self._levels, initial_state=pre_last_state_all_levels
         )
-        # pre_posteriorsとpre_priorsは、最初に見た部分に基づく結果です。
-        # post_priorsは、その後の予測部分の結果です。
-        # outputs_bot_levelは、予測の最終的な出力（例えば、動画の後半部分）
+
+        # 観察部分の結果と予測部分の結果を返します
         return pre_posteriors, pre_priors, post_priors, outputs_bot_level
 
     # 観察されたデータ（サンプル）と予測されたデータの違いを計算するためのもの
@@ -249,44 +221,6 @@ class CWVAE(nn.Module):
         # 計算したKLダイバージェンスを全部足し合わせる
         return dist.kl_divergence(mvn1, mvn2).sum(dim=-1)
 
-    # 損失（ロス）を計算する関数
-    def compute_losses(self, obs, obs_decoded, priors, posteriors, dec_stddev=0.1, kl_grad_post_perc=None, free_nats=None, beta=None):
-        # dec_stddev をテンソルに変換
-        if isinstance(dec_stddev, (int, float)):
-            dec_stddev = torch.full_like(obs_decoded, dec_stddev)
-
-        # 観測されたデータとデコードされたデータのネガティブ対数尤度の計算
-        nll_term = -self._log_prob_obs(obs, obs_decoded, dec_stddev).mean()
-
-        # KLダイバージェンスの計算
-        kl_term = torch.tensor(0.0).to(obs.device)
-        kld_all_levels = []
-
-        for i in range(self._levels):
-            kld_level = self._gaussian_KLD(posteriors[i], priors[i])
-
-            if free_nats is not None:
-                kld_level = torch.clamp(kld_level - free_nats, min=0.0)
-            if beta is not None:
-                if isinstance(beta, list):
-                    kld_level = beta[i] * kld_level
-                else:
-                    kld_level = beta * kld_level
-
-            kl_term += kld_level.mean()
-            kld_all_levels.append(kld_level)
-
-        # ELBOの計算（負の対数尤度 + KLダイバージェンス）
-        neg_elbo = nll_term + kl_term
-        loss = neg_elbo / obs.size(1)
-
-        return {
-            "loss": loss,
-            "nll_term": nll_term,
-            "kl_term": kl_term,
-            "kld_all_levels": kld_all_levels
-        }
-
 # 動画の中で、時間が進むごとにどんな変化が起きていくか」を計算するための仕組みを作っている
 # 時間ごとに少しずつ変わるものを計算して、それを集める役割
 def manual_scan(cell, obs_inputs, context, reset_state, use_observation, initial):
@@ -295,7 +229,7 @@ def manual_scan(cell, obs_inputs, context, reset_state, use_observation, initial
     prev_out = {"state": initial}
     seq_len = obs_inputs.size(1)
 
-    for t in range(seq_len): # seq_lenは、時間の長さ
+    for t in range(seq_len):
         inputs = (
             obs_inputs[:, t],
             context[:, t],
@@ -311,11 +245,9 @@ def manual_scan(cell, obs_inputs, context, reset_state, use_observation, initial
     posterior_last_step = prev_out["state"]
     return prior, posterior, posterior_last_step
 
-
 def build_model(cfg, open_loop=True):
     device = cfg['device']
 
-    # モデルのインスタンス作成
     model = CWVAE(
         levels=cfg['levels'],
         tmp_abs_factor=cfg['tmp_abs_factor'],
@@ -334,14 +266,14 @@ def build_model(cfg, open_loop=True):
 
     model.apply(model.init_weights)
 
-    obs = torch.zeros([cfg['batch_size'], cfg['seq_len'], cfg['channels'], 64, 64]).to(device) # 仮の動画データを作ってAIに渡す
-    obs_encoded = model.encoder(obs) # AIがこの動画の重要な情報（特徴）を抽出
+    obs = torch.zeros([cfg['batch_size'], cfg['seq_len'], cfg['channels'], 64, 64]).to(device)
+    obs_encoded = model.encoder(obs)
 
     if len(obs_encoded) != cfg['levels']:
         raise ValueError(f"Encoder output does not match expected levels. Expected {cfg['levels']}, but got {len(obs_encoded)}.")
 
-    outputs_bot, last_state_all_levels, priors, posteriors = model.hierarchical_unroll(obs_encoded) # 「次に何が起きるか」を考える
-    obs_decoded = model.decoder(outputs_bot)[0] # AIが考えた「次の瞬間の特徴」を元にして、新しいフレーム（画像）を作る
+    outputs_bot, last_state_all_levels, priors, posteriors = model.hierarchical_unroll(obs_encoded)
+    obs_decoded = model.decoder(outputs_bot)[0]
 
     losses = model.compute_losses(
         obs,
@@ -351,11 +283,11 @@ def build_model(cfg, open_loop=True):
         dec_stddev=cfg['dec_stddev'],
         free_nats=cfg['free_nats'],
         beta=cfg['beta'],
-    ) # AIが予測した動画と、本当の動画の違いをチェックする
+    )
 
-    if open_loop: # AIが動画の一部を見たあと、その続きも自分で予測して作れるようにしています。
+    if open_loop:
         ctx_len = cfg['open_loop_ctx']
-        pre_posteriors, pre_priors, post_priors, outputs_bot_level = model.open_loop_unroll(
+        pre_posteriors, pre_priors, post_priors, _ = model.open_loop_unroll(
             obs_encoded, ctx_len=ctx_len, use_observations=cfg.get('use_obs', True)
         )
         prior_multistep_decoded = model.decode_prior_multistep(post_priors[0]["mean"])

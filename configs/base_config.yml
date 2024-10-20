@@ -24,7 +24,7 @@ channels: null
 
 # TRAINING
 lr: null
-batch_size: 16
+batch_size: 48
 num_epochs: 300
 kl_grad_post_perc: null
 free_nats: null

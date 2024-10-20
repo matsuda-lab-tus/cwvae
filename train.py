@@ -31,7 +31,7 @@ if __name__ == "__main__":
     wandb.init(project="CW-VAE", config=cfg)
 
     # デバイスの設定
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
     cfg['device'] = device
 
     # わかりやすい名前を使用した保存ディレクトリの設定
