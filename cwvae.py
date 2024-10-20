@@ -95,90 +95,104 @@ class CWVAE(nn.Module):
         return decoded
     
     # 階層的（レベルごと）に情報を伝えながら、予測を進めていく部分
-    def hierarchical_unroll(self, inputs, actions=None, use_observations=None, initial_state=None):
-        level_top = self._levels - 1
+    def hierarchical_unroll(
+            self, inputs, actions=None, use_observations=None, initial_state=None
+        ):
+            level_top = self._levels - 1
 
-        # initial_state が最初に与えられない場合は、各レベルに対してNoneを設定します。これは「まだ何もない状態」を表します。
-        if initial_state is None:
-            initial_state = [None] * self._levels
+            if initial_state is None:
+                initial_state = [None] * self._levels
 
-        if not isinstance(use_observations, list):  # use_observationsがリストでない場合、すべてのレベルで同じ値を使用
-            use_observations = [use_observations] * self._levels
+            if not isinstance(use_observations, list):
+                use_observations = [use_observations] * self._levels
 
-        context = torch.zeros(
-            inputs[level_top].size(0),
-            inputs[level_top].size(1),
-            self.cells[-1]._detstate_size,
-            device=inputs[level_top].device
-        )
-
-        prior_list = []
-        posterior_list = []
-        last_state_all_levels = []
-
-        for level in range(level_top, -1, -1):
-            obs_inputs = inputs[level]
-
-            # バッチ次元の確認
-            if obs_inputs.size(0) != context.size(0):
-                obs_inputs = obs_inputs.transpose(0, 1)
-
-            # obs_inputs と context のバッチサイズ確認
-            if obs_inputs.size(0) != context.size(0):
-                raise ValueError(f"Batch size mismatch at level {level}: obs_inputs.size(0) = {obs_inputs.size(0)}, context.size(0) = {context.size(0)}")
-
-            if level == level_top:
-                reset_state = torch.ones(
-                    obs_inputs.size(0), obs_inputs.size(1), 1, device=obs_inputs.device)
-            else:
-                reset_state = reset_state.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
-                reset_state = reset_state.view(
-                    reset_state.size(0),
-                    reset_state.size(1) * self._tmp_abs_factor,
-                    reset_state.size(3)
-                )
-
-            expected_seq_len = obs_inputs.size(1)
-
-            # contextのシーケンス長を合わせる
-            if level != level_top:
-                context = context.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
-                context = context.view(
-                    context.size(0),
-                    context.size(1) * self._tmp_abs_factor,
-                    context.size(3)
-                )
-
-            # context の長さを調整
-            context = context[:, :expected_seq_len, :]
-
-            if level == 0 and actions is not None:
-                context = torch.cat([context, actions], dim=-1)
-
-            initial = self.cells[level].zero_state(obs_inputs.size(0), obs_inputs.device)
-            if initial_state[level] is not None:
-                initial = initial_state[level]
-
-            prior, posterior, posterior_last_step = manual_scan(
-                self.cells[level],
-                obs_inputs,
-                context,
-                reset_state,
-                use_observations[level],  # 各レベルの use_observations を使用
-                initial,
+            # コンテキストの初期化
+            context = torch.zeros(
+                inputs[level_top].size(0),
+                inputs[level_top].size(1),
+                self.cells[-1]._detstate_size,
+                device=inputs[level_top].device
             )
 
-            last_state_all_levels.insert(0, posterior_last_step)
-            context = posterior["det_out"]
+            prior_list = []
+            posterior_list = []
+            last_state_all_levels = []
 
-            prior_list.insert(0, prior)
-            posterior_list.insert(0, posterior)
+            for level in range(level_top, -1, -1):
+                obs_inputs = inputs[level]
 
-        output_bot_level = context
-        # 最も下のレベルの出力（output_bot_level）と、すべてのレベルの状態、事前と事後の情報をまとめて返す
-        return output_bot_level, last_state_all_levels, prior_list, posterior_list
+                # バッチ次元の確認
+                if obs_inputs.size(0) != context.size(0):
+                    obs_inputs = obs_inputs.transpose(0, 1)
 
-    # 最初の部分だけを見てその後を予測する部分
+                # obs_inputs と context のバッチサイズ確認
+                if obs_inputs.size(0) != context.size(0):
+                    raise ValueError(f"Batch size mismatch at level {level}: obs_inputs.size(0) = {obs_inputs.size(0)}, context.size(0) = {context.size(0)}")
+                print(f"[DEBUG] Level {level}: obs_inputs shape: {obs_inputs.shape}, context shape: {context.shape}")
+
+                # リセット状態の初期化
+                if level == level_top:
+                    reset_state = torch.ones(
+                        obs_inputs.size(0), obs_inputs.size(1), 1, device=obs_inputs.device)
+                else:
+                    reset_state = reset_state.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
+                    reset_state = reset_state.view(
+                        reset_state.size(0),
+                        reset_state.size(1) * self._tmp_abs_factor,
+                        reset_state.size(3)
+                    )
+
+                expected_seq_len = obs_inputs.size(1)  # obs_inputsから期待されるシーケンス長を取得
+
+                # contextのシーケンス長を合わせる
+                if level != level_top:
+                    context = context.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
+                    context = context.view(
+                        context.size(0),
+                        context.size(1) * self._tmp_abs_factor,
+                        context.size(3)
+                    )
+
+                # context の長さを調整
+                context = context[:, :expected_seq_len, :]
+
+                if level == 0 and actions is not None:
+                    context = torch.cat([context, actions], dim=-1)
+
+                initial = self.cells[level].zero_state(obs_inputs.size(0), obs_inputs.device)
+                if initial_state[level] is not None:
+                    initial = initial_state[level]
+
+                prior, posterior, posterior_last_step = manual_scan(
+                    self.cells[level],
+                    obs_inputs,
+                    context,
+                    reset_state,
+                    use_observations[level],  # 各レベルの use_observations を使用
+                    initial,
+                )
+
+                last_state_all_levels.insert(0, posterior_last_step)
+                context = posterior["det_out"]
+
+                prior_list.insert(0, prior)
+                posterior_list.insert(0, posterior)
+
+                # Tiling context by a factor of tmp_abs_factor for use at the level below.
+                if level != 0:
+                    context = context.unsqueeze(2)
+                    context = context.repeat(1, 1, self._tmp_abs_factor, 1)
+                    context = context.view(
+                        context.size(0),
+                        context.size(1) * self._tmp_abs_factor,
+                        context.size(3)
+                    )
+
+            output_bot_level = context
+            print(f"[DEBUG] Output bot level shape before returning: {output_bot_level.shape}")
+
+            return output_bot_level, last_state_all_levels, prior_list, posterior_list
+    
     def open_loop_unroll(self, inputs, ctx_len, actions=None, use_observations=None, initial_state=None):
         if use_observations is None:
             use_observations = [True] * self._levels  # use_observationsがNoneの場合、すべてのレベルでTrueを使用

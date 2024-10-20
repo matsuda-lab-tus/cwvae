@@ -73,14 +73,14 @@ if __name__ == "__main__":
     cfg['device'] = device
 
     # データセットをロード（validation dataを使用）
-    _, val_loader = load_dataset(cfg['datadir'], cfg['batch_size'], transform=transform)
+    _, val_loader = load_dataset(cfg['datadir'], cfg['batch_size'], seq_len=cfg['seq_len'], transform=transform)
 
     # モデルの構築
     model_components = build_model(cfg)
     model = model_components["meta"]["model"]
 
     # チェックポイントのロード
-    checkpoint_path = "/home/yamada_24/cwvae/logs/minerl_cwvae_20241020_021430/model/model.pth"
+    checkpoint_path = "/home/yamada_24/cwvae/logs/minerl_cwvae_20241020_141514/model/model.pth"
     if os.path.exists(checkpoint_path):
         print(f"Loading checkpoint from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)

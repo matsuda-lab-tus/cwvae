@@ -9,6 +9,7 @@ import tools
 import wandb
 from datetime import datetime  # 終了時間の取得に使用
 from data_loader import transform  # データセットの変換関数のインポート
+import torchvision.utils as vutils  # 画像を保存するためのユーティリティ
 
 # Checkpointクラスのインポート
 from loggers.checkpoint import Checkpoint
@@ -30,7 +31,7 @@ if __name__ == "__main__":
     wandb.init(project="CW-VAE", config=cfg)
 
     # デバイスの設定
-    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     cfg['device'] = device
 
     # わかりやすい名前を使用した保存ディレクトリの設定
@@ -94,6 +95,7 @@ if __name__ == "__main__":
             obs_encoded = encoder(obs)
 
             outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded)
+            print(model.decoder(outputs_bot))  # 出力を確認するために追加
             obs_decoded = model.decoder(outputs_bot)[0]
 
             # 形状を確認
@@ -132,30 +134,32 @@ if __name__ == "__main__":
             for batch_idx, val_batch in enumerate(val_loader):
                 val_batch = val_batch.to(device)
 
-                obs2 = val_batch
-                # val_batch をエンコーダが受け入れる形式に変換
-                # 元の形状: [16, 5, 100, 3, 64, 64]
-                # 必要な形状: [16 * 5, 100, 3, 64, 64]
-                adjusted_val_batch = obs2.view(-1, 100, 3, 64, 64)  # [バッチサイズ * シーケンス数, フレーム数, チャネル数, 高さ, 幅]
+                # バリデーションデータをエンコーダが受け入れる形式に変換
+                adjusted_val_batch = val_batch.view(-1, 100, 3, 64, 64)
 
-                val_obs_encoded = encoder(adjusted_val_batch)
+                # エンコーダを通して特徴を抽出
+                val_obs_encoded = model.encoder(adjusted_val_batch)
 
-                val_outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded)
-                obs2_decoded = model.decoder(val_outputs_bot)[0]
+                # 予測を行う
+                outputs_bot, _, val_priors, val_posteriors = model.hierarchical_unroll(val_obs_encoded)
 
-                # # デコーダーの出力がタプルの場合、最初の要素を使用する
-                # if isinstance(val_decoder_output, tuple):
-                #     val_obs_decoded = val_decoder_output[0]
-                # else:
-                #     val_obs_decoded = val_decoder_output
-                # print(f"val_obs_decoded shape: {val_obs_decoded.shape}")
+                # デコーダで予測画像を生成
+                val_obs_decoded = model.decoder(outputs_bot)[0]  # 最初の要素を取得
 
-                # 形状を確認
-                print(f"obs2 shape: {obs2.shape}, obs_decoded shape: {obs2_decoded.shape}")
-            
+                # 予測画像を保存
+                output_dir = os.path.join(exp_rootdir, f"val_outputs_epoch_{epoch + 1}")
+                os.makedirs(output_dir, exist_ok=True)
+
+                # 画像を保存するためのループ
+                for i in range(val_obs_decoded.size(0)):
+                    # 画像を保存
+                    img_path = os.path.join(output_dir, f"val_pred_{batch_idx * val_loader.batch_size + i}.png")
+                    vutils.save_image(val_obs_decoded[i], img_path, normalize=True)
+
+                # 検証損失の計算
                 val_losses_dict = model.compute_losses(
                     obs=val_batch.view(-1, 100, 3, 64, 64),
-                    obs_decoded=obs2_decoded,
+                    obs_decoded=val_obs_decoded,
                     priors=val_priors,
                     posteriors=val_posteriors,
                     dec_stddev=cfg['dec_stddev'],
