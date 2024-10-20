@@ -1,111 +1,120 @@
-import os
-import torch
-from torch.utils.data import Dataset, DataLoader
-import imageio
-import numpy as np
-from PIL import Image
-from torchvision import transforms
+import os  # OSライブラリをインポートして、ファイルやディレクトリを操作します
+import torch  # PyTorchライブラリをインポート
+from torch.utils.data import Dataset, DataLoader  # データセットとデータローダーを使います
+import imageio  # 画像を読み込むためのライブラリをインポート
+import numpy as np  # 数値計算用のライブラリをインポート
+from PIL import Image  # 画像処理のためのライブラリをインポート
+from torchvision import transforms  # 画像の変換を行うためのライブラリをインポート
 
 
+# 動画データセットを扱うクラスを定義します
 class VideoDataset(Dataset):
     def __init__(self, video_dir, seq_len=100, transform=None):
-        self.video_dir = video_dir
+        self.video_dir = video_dir  # 動画が格納されているディレクトリのパス
+        # ディレクトリ内のすべてのMP4ファイルをリストに格納します
         self.video_files = [os.path.join(video_dir, f) for f in os.listdir(video_dir) if f.endswith('.mp4')]
-        self.transform = transform
+        self.transform = transform  # 画像の変換処理
         self.seq_len = seq_len  # 抽出するシーケンスの長さ
 
     def __len__(self):
-        return len(self.video_files)
+        return len(self.video_files)  # データセット内の動画ファイルの数を返します
 
     def __getitem__(self, idx):
-        video_path = self.video_files[idx]
-        video = self._load_video(video_path)  # [time, height, width, channels]
+        video_path = self.video_files[idx]  # 指定されたインデックスの動画ファイルのパスを取得
+        video = self._load_video(video_path)  # 動画を読み込みます（[time, height, width, channels]の形）
 
         # 動画からフレームを取得し、必要なシーケンス長に合わせてトリミング
-        video_tensor = self._process_video(video)  # [num_sequences, seq_len, channels, height, width]
+        video_tensor = self._process_video(video)  # フレームを処理してテンソルに変換（[num_sequences, seq_len, channels, height, width]の形）
 
-        return video_tensor
+        return video_tensor  # フレームのテンソルを返します
 
     def _load_video(self, video_path):
-        reader = imageio.get_reader(video_path, 'ffmpeg')
-        frames = [frame for frame in reader]
-        reader.close()
+        # 動画を読み込むための関数
+        reader = imageio.get_reader(video_path, 'ffmpeg')  # 動画リーダーを作成
+        frames = [frame for frame in reader]  # 各フレームを読み込みます
+        reader.close()  # 読み込みが終わったらクローズします
 
         # 動画を (time, height, width, channels) の形で取得
-        video = np.stack(frames, axis=0)
-        return video
+        video = np.stack(frames, axis=0)  # フレームをスタックして動画の配列を作成
+        return video  # 動画データを返します
 
     def _process_video(self, video):
         # 動画のフレーム数を取得
         total_frames = video.shape[0]
         
         # シーケンス数を計算
-        num_sequences = total_frames // self.seq_len
+        num_sequences = total_frames // self.seq_len  # シーケンスの数を計算します
         
         # トリミングして指定されたシーケンス長に合わせる
         trimmed_video = video[:num_sequences * self.seq_len]  # 必要なフレーム数にカット
+        # 動画をシーケンスごとに再構築
         trimmed_video = trimmed_video.reshape(num_sequences, self.seq_len, *trimmed_video.shape[1:])  # [num_sequences, seq_len, height, width, channels]
 
-        frames = []
-        for seq in trimmed_video:
-            for frame in seq:
-                frame = Image.fromarray(frame)
-                if self.transform:
-                    frame = self.transform(frame)
-                frames.append(frame)
+        frames = []  # フレームを格納するリストを初期化
+        for seq in trimmed_video:  # 各シーケンスごとに処理
+            for frame in seq:  # 各フレームに対して
+                frame = Image.fromarray(frame)  # NumPy配列をPIL画像に変換
+                if self.transform:  # 変換が指定されている場合
+                    frame = self.transform(frame)  # フレームに変換を適用
+                frames.append(frame)  # 変換後のフレームをリストに追加
 
         # フレームをスタックして [num_sequences, seq_len, channels, height, width] のテンソルに
         video_tensor = torch.stack(frames)  # [num_sequences * seq_len, channels, height, width]
         video_tensor = video_tensor.view(num_sequences, self.seq_len, *video_tensor.shape[1:])  # [num_sequences, seq_len, channels, height, width]
 
         # 最終的な形状: [num_sequences, seq_len, channels, height, width]
-        return video_tensor
+        return video_tensor  # 動画テンソルを返します
 
 
 # 画像データの正規化を含むトランスフォーム
 transform = transforms.Compose([
     transforms.Resize((64, 64)),  # 画像を64x64にリサイズ
-    transforms.ToTensor(),  # [0, 255]のピクセル値を[0, 1]にスケーリング
+    transforms.ToTensor(),  # ピクセル値を[0, 1]にスケーリング
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # 正規化を適用して[-1, 1]にスケーリング
 ])
 
 
+# データセットを読み込む関数
 def load_dataset(datadir, batch_size, seq_len=100, transform=transform):
+    # トレーニングとテスト用のディレクトリを設定
     train_dir = os.path.join(datadir, 'train')
     test_dir = os.path.join(datadir, 'test')
 
+    # 動画データセットを作成
     train_dataset = VideoDataset(video_dir=train_dir, seq_len=seq_len, transform=transform)
     test_dataset = VideoDataset(video_dir=test_dir, seq_len=seq_len, transform=transform)
 
+    # データローダーを作成
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
-    return train_loader, test_loader
+    return train_loader, test_loader  # トレーニングとテスト用のデータローダーを返します
 
 
+# データローダーをテストする関数
 def test_data_loader(datadir, batch_size):
-    train_loader, test_loader = load_dataset(datadir, batch_size)
+    train_loader, test_loader = load_dataset(datadir, batch_size)  # データセットを読み込む
 
     # トレーニングデータの確認
-    print("Testing train_loader...")
-    for batch_idx, data in enumerate(train_loader):
-        print(f"Batch {batch_idx + 1}:")
+    print("Testing train_loader...")  # トレーニングデータローダーをテスト
+    for batch_idx, data in enumerate(train_loader):  # バッチごとにデータを取得
+        print(f"Batch {batch_idx + 1}:")  # バッチ番号を表示
         print(f"Data shape: {data.shape}")  # データの形状を確認
 
         if batch_idx == 2:  # 3バッチ分だけ確認
             break
 
     # テストデータの確認
-    print("\nTesting test_loader...")
-    for batch_idx, data in enumerate(test_loader):
-        print(f"Batch {batch_idx + 1}:")
+    print("\nTesting test_loader...")  # テストデータローダーをテスト
+    for batch_idx, data in enumerate(test_loader):  # バッチごとにデータを取得
+        print(f"Batch {batch_idx + 1}:")  # バッチ番号を表示
         print(f"Data shape: {data.shape}")  # データの形状を確認
 
         if batch_idx == 2:  # 3バッチ分だけ確認
             break
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # プログラムが直接実行されたとき
     datadir = "./minerl_navigate/"  # データが格納されているディレクトリのパス
     batch_size = 16  # バッチサイズを指定
-    test_data_loader(datadir, batch_size)
+    test_data_loader(datadir, batch_size)  # データローダーのテストを実行

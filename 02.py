@@ -9,8 +9,8 @@ import tools
 from datetime import datetime
 from loggers.checkpoint import Checkpoint
 
-# 予測関数: 36フレームの入力から残り64フレームを生成
-# 予測関数: 36フレームの入力から残り64フレームを生成
+# 予測関数: 100フレームの入力から残り100フレームを生成
+# 予測関数: 100フレームの入力から残り100フレームを生成
 def generate_predictions(cfg, model, encoder, decoder, val_loader, exp_rootdir):
     print("予測を開始します。")
     device = cfg['device']
@@ -21,16 +21,19 @@ def generate_predictions(cfg, model, encoder, decoder, val_loader, exp_rootdir):
                 break
             val_batch = val_batch.to(device)
             
-            # 入力シーケンスを36フレームに制限し、残りを予測
-            context_frames = val_batch[:, :36]  # [バッチサイズ, 36, チャネル数, 高さ, 幅]
-            future_frames_gt = val_batch[:, 36:100]  # [バッチサイズ, 64, チャネル数, 高さ, 幅]
+            # 入力シーケンスを100フレームに制限し、残りを予測
+            context_frames = val_batch[:, :100]  # [バッチサイズ, 100, チャネル数, 高さ, 幅]
+            future_frames_gt = val_batch[:, 100:200]  # [バッチサイズ, 100, チャネル数, 高さ, 幅]
+
+            # バリデーションデータをエンコーダが受け入れる形式に変換
+            adjusted_val_batch = context_frames.view(-1, 100, 3, 64, 64)
 
             # エンコーダーを通して特徴量を抽出（コンテキスト部分）
-            obs_encoded_context = encoder(context_frames)
+            obs_encoded_context = encoder(adjusted_val_batch)
 
             # 各レベルのコンテキストを拡張して、未来の予測を行うためのシーケンスに調整
             obs_encoded_full = []
-            future_length = 100 - 36  # 予測するフレーム数
+            future_length = 200 - 100  # 予測するフレーム数
 
             for level_idx, obs_context_level in enumerate(obs_encoded_context):
                 obs_encoded_dim = obs_context_level.shape[2]
@@ -55,7 +58,7 @@ def generate_predictions(cfg, model, encoder, decoder, val_loader, exp_rootdir):
 
             # ヒエラルキカルアンロールで予測を実行
             outputs_bot, _, priors, posteriors = model.hierarchical_unroll(obs_encoded_full)
-            outputs_bot_future = outputs_bot[:, 36:]  # 36フレーム以降の予測部分を取得
+            outputs_bot_future = outputs_bot[:, 70:140]  # 100フレーム以降の予測部分を取得
 
             # デコーダーを使って未来のフレームを画像に変換
             preds = decoder(outputs_bot_future)[0]  # [バッチサイズ, 64, 3, 64,64]
@@ -66,8 +69,8 @@ def generate_predictions(cfg, model, encoder, decoder, val_loader, exp_rootdir):
 
             # バッチ内の各サンプルについて保存
             for sample_idx in range(preds.shape[0]):
-                sample_preds = preds[sample_idx]  # [64, 3, 64, 64]
-                sample_gt = future_frames_gt[sample_idx]  # [64, 3, 64, 64]
+                sample_preds = preds[sample_idx]  # [100, 3, 64, 64]
+                sample_gt = future_frames_gt[sample_idx]  # [100, 3, 64, 64]
 
                 # 予測結果のファイルパス
                 pred_save_path = os.path.join(output_dir, f"predictions_sample_{sample_idx}.png")
@@ -90,7 +93,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--logdir", default="./logs", type=str, help="ログディレクトリのパス")
     parser.add_argument("--datadir", default="./minerl_navigate/", type=str, help="データディレクトリのパス")
-    parser.add_argument("--checkpoint", default="./logs/cwvae_experiment_20241018_145226/model/model.pth", type=str, help="学習済みモデルのチェックポイントのパス")
+    parser.add_argument("--checkpoint", default="/home/yamada_24/cwvae/logs/minerl_cwvae_20241020_214406/model/model.pth", type=str, help="学習済みモデルのチェックポイントのパス")
     parser.add_argument("--config", default="./configs/minerl.yml", type=str, help="設定ファイル（YAML）のパス")
     parser.add_argument("--base-config", default="./configs/base_config.yml", type=str, help="ベース設定ファイルのパス")
     args = parser.parse_args()
