@@ -180,6 +180,8 @@ def plot_metrics(mean_metric, std_metric, logdir, metric_name):
     指定されたメトリックの平均と標準偏差を時間にわたってプロットします。
     """
     x = np.arange(len(mean_metric))  # X軸の値を生成
+    mean_metric = np.mean(mean_metric, axis=0)
+    std_metric = np.std(mean_metric, axis=0)
     plt.figure()  # 新しい図を作成
     plt.plot(x, mean_metric, label=f"Mean {metric_name.upper()}")  # メトリックの平均をプロット
     plt.fill_between(x, mean_metric - std_metric, mean_metric + std_metric, alpha=0.2)  # 標準偏差の範囲を塗りつぶす

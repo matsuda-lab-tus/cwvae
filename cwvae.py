@@ -74,6 +74,32 @@ class CWVAE(nn.Module):
         # 確率的状態を埋め込むための線形層
         self.stoch_to_embed = nn.Linear(self._state_sizes["stoch"], self._embed_size).to(device)  # 隠れ状態から埋め込みを作成
 
+    def forward(self, obs):
+        """
+        観察データを受け取り、エンコード、階層的なアンロール、デコードを行う。
+        :param obs: 入力観察データ (batch_size, seq_len, channels, height, width)
+        :return: 再構成された観察データ、損失情報
+        """
+        # 観察データをエンコーダーでエンコード
+        obs_encoded = self.encoder(obs)
+
+        # 階層的にアンロールして予測を行う
+        outputs_bot, last_state_all_levels, priors, posteriors = self.hierarchical_unroll(obs_encoded)
+        
+        # デコーダーで再構成された観察データを取得
+        obs_decoded = self.decoder(outputs_bot)[0]
+
+        # 損失を計算
+        losses = self.compute_losses(
+            obs=obs,
+            obs_decoded=obs_decoded,
+            priors=priors,
+            posteriors=posteriors
+        )
+
+        # 再構成された観察データと損失を返す
+        return obs_decoded, losses
+    
     # モデルの重みを初期化する関数です
     def init_weights(self, m):  
         # 線形層の場合、重みをxavierの方法で初期化します

@@ -20,7 +20,7 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
     # 引数を追加して、各引数の説明を設定
     parser.add_argument("--logdir", default="./logs", type=str, help="ログディレクトリのパス")
     parser.add_argument("--datadir", default="./minerl_navigate/", type=str, help="データディレクトリのパス")
-    parser.add_argument("--config", default="./configs/minerl.yml", type=str, help="設定ファイル（YAML）のパス")
+    parser.add_argument("--config", default="./configs/mmnist.yml", type=str, help="設定ファイル（YAML）のパス")
     parser.add_argument("--base-config", default="./configs/base_config.yml", type=str, help="ベース設定ファイルのパス")
     
     args = parser.parse_args()  # 引数を解析
@@ -155,7 +155,10 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
                 for i in range(val_obs_decoded.size(0)):  # 各画像に対して
                     # 画像を保存
                     img_path = os.path.join(output_dir, f"val_pred_{batch_idx * val_loader.batch_size + i}.png")  # 保存先のパスを設定
-                    vutils.save_image(val_obs_decoded[i], img_path, normalize=True)  # 画像を保存
+                    try:
+                        vutils.save_image(val_obs_decoded[i], img_path, normalize=True)  # 画像を保存
+                    except Exception as e:
+                        print(f"画像の保存中にエラーが発生しました: {e}") # # エラーメッセージを表示し、次の画像の保存に進む
 
                 # 検証損失の計算
                 val_losses_dict = model.compute_losses(  # 検証損失を計算
