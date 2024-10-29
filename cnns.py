@@ -13,7 +13,7 @@ class Encoder(nn.Module):
         self.levels = levels  # 階層の数を設定
         self.tmp_abs_factor = tmp_abs_factor  # 時間の絶対的な因子を設定
         self.activation = nn.LeakyReLU(
-            negative_slope=0.01
+            negative_slope=0.2
         )  # 活性化関数をLeakyReLUに設定
         self.channels_mult = channels_mult  # チャンネルの倍率を設定
         self.dense_layers_num = dense_layers  # 密な層の数を設定
@@ -145,7 +145,7 @@ class Decoder(nn.Module):
         self.channels_mult = channels_mult  # チャンネルの倍率を設定
 
         # 全結合層を作成し、1024次元に変換
-        self.fc = nn.Linear(self.embed_size, 1024)  # 埋め込みサイズから1024への全結合層
+        self.fc = nn.Linear(self.embed_size, 1024)  # 埋め込みサイズ800から1024への全結合層
 
         # フィルター数を設定
         filters = 32
@@ -188,7 +188,7 @@ class Decoder(nn.Module):
         # )
 
         self.activation = nn.LeakyReLU(
-            negative_slope=0.01
+            negative_slope=0.2
         )  # 活性化関数をLeakyReLUに設定
 
         # 最終的な活性化関数を設定
@@ -198,54 +198,55 @@ class Decoder(nn.Module):
             self.final_activation = nn.Tanh()  # デフォルトはTanh
 
     def forward(self, x):
-        intermediate_outputs = {}  # 中間出力を保存する辞書
+        # intermediate_outputs = {}  # 中間出力を保存する辞書
 
-        batch_size, timesteps, embed_size = x.size()  # 入力のサイズを取得
-        # print(
-        #     f"[DEBUG] Input to Decoder: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 入力の形を表示
+        print(f"[DEBUG] Decoder input shape: {x.shape}")  # デバッグ用プリント
+
+        print(
+            f"[DEBUG] Input to Decoder: {x.shape}, min: {x.min()}, max: {x.max()}"
+        )  # 入力の形を表示
 
         # 全結合層に通すために形を変更
-        x = x.reshape(batch_size * timesteps, embed_size)  # 形を変更
+        # x = x.reshape(batch_size * timesteps, embed_size)  # 形を変更
         # print(
         #     f"[DEBUG] After reshaping for fc layer: {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 形の変化を表示
 
         # 全結合層を通します
         x = self.activation(self.fc(x))  # 活性化関数を通す
-        intermediate_outputs["fc"] = x  # fc層の出力を保存
-        # print(
-        #     f"[DEBUG] After fc: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
+        # intermediate_outputs["fc"] = x  # fc層の出力を保存
+        print(
+            f"[DEBUG] After fc: {x.shape}, min: {x.min()}, max: {x.max()}"
+        )  # 形の変化を表示
 
         # 1x1のグリッドに変形します
-        x = x.view(batch_size * timesteps, 1024, 1, 1)  # 形を変更
-        intermediate_outputs["reshaped"] = x  # リシェイプ後の出力を保存
+        x = x.view(-1, 1024, 1, 1)  # 形を変更
+        # intermediate_outputs["reshaped"] = x  # リシェイプ後の出力を保存
         # print(
         #     f"[DEBUG] After reshaping to 1x1: {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 形の変化を表示
 
         # 畳み込み転置層を通してアップサンプリングします
         x = self.activation(self.deconv1(x))  # 畳み込み転置層1を通す
-        intermediate_outputs["deconv1"] = x  # deconv1層の出力を保存
+        # intermediate_outputs["deconv1"] = x  # deconv1層の出力を保存
         # print(
         #     f"[DEBUG] After deconv1: {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 形の変化を表示
 
         x = self.activation(self.deconv2(x))  # 畳み込み転置層2を通す
-        intermediate_outputs["deconv2"] = x  # deconv2層の出力を保存
+        # intermediate_outputs["deconv2"] = x  # deconv2層の出力を保存
         # print(
         #     f"[DEBUG] After deconv2: {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 形の変化を表示
 
         x = self.activation(self.deconv3(x))  # 畳み込み転置層3を通す
-        intermediate_outputs["deconv3"] = x  # deconv3層の出力を保存
+        # intermediate_outputs["deconv3"] = x  # deconv3層の出力を保存
         # print(
         #     f"[DEBUG] After deconv3: {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 形の変化を表示
 
         x = self.activation(self.deconv4(x))  # 畳み込み転置層4を通す
-        intermediate_outputs["deconv4"] = x  # deconv4層の出力を保存
+        # intermediate_outputs["deconv4"] = x  # deconv4層の出力を保存
         # print(
         #     f"[DEBUG] After deconv4: {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 形の変化を表示
@@ -257,41 +258,40 @@ class Decoder(nn.Module):
         # )  # 形の変化を表示
 
         x = self.final_activation(x)  # 最終的な活性化関数を通す
-        intermediate_outputs["final_activation"] = x  # 最終活性化関数後の出力を保存
+        # intermediate_outputs["final_activation"] = x  # 最終活性化関数後の出力を保存
         # print(
         #     f"[DEBUG] After final activation ({self.final_activation.__class__.__name__}): {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 形の変化を表示
 
         # 元の次元に戻します
-        x = x.view(batch_size, timesteps, self.output_channels, 64, 64)  # 形を戻す
+        # x = x.view(batch_size, timesteps, self.output_channels, 64, 64)  # 形を戻す
         # print(
         #     f"[DEBUG] Final output shape: {x.shape}, min: {x.min()}, max: {x.max()}"
         # )  # 最終出力の形を表示
 
-        return x, intermediate_outputs  # 最終出力と中間出力を返す
+        return x # 最終出力と中間出力を返す
 
-if __name__ == "__main__":
-    # モデルのインスタンスを作成
-    encoder = Encoder(levels=3, tmp_abs_factor=6, dense_layers=3, embed_size=256, channels_mult=1)
-    decoder = Decoder(output_channels=3, embed_size=256, channels_mult=1)
+# if __name__ == "__main__": # モデルのインスタンスを作成
+#     encoder = Encoder(levels=3, tmp_abs_factor=6, dense_layers=3, embed_size=256, channels_mult=1)
+#     decoder = Decoder(output_channels=3, embed_size=256, channels_mult=1)
 
-    # ダミーデータを作成
-    batch_size = 50  # バッチサイズ
-    seq_len = 100  # シーケンス長
-    obs = torch.randn(batch_size, seq_len, 3, 64, 64)  # 入力データ
+#     # ダミーデータを作成
+#     batch_size = 50  # バッチサイズ
+#     seq_len = 100  # シーケンス長
+#     obs = torch.randn(batch_size, seq_len, 3, 64, 64)  # 入力データ
 
-    # エンコーダーを通して処理
-    layers = encoder(obs)  # エンコーダーを通して処理
-    print(f"Number of layers: {len(layers)}")  # 出力の数を表示
-    for i, layer in enumerate(layers):  # 各出力に対して
-        print(f"Layer {i}: {layer.size()}")  # 出力の形を表示
+#     # エンコーダーを通して処理
+#     layers = encoder(obs)  # エンコーダーを通して処理
+#     print(f"Number of layers: {len(layers)}")  # 出力の数を表示
+#     for i, layer in enumerate(layers):  # 各出力に対して
+#         print(f"Layer {i}: {layer.size()}")  # 出力の形を表示
 
 
-    # デコーダーを通して処理
-    obs = torch.randn(batch_size, seq_len, 256)  # 入力データ
+#     # デコーダーを通して処理
+#     obs = torch.randn(batch_size, seq_len, 256)  # 入力データ
     
-    outputs, intermediate_outputs = decoder(obs)  # デコーダーを通して処理
+#     outputs = decoder(obs)  # デコーダーを通して処理
     # print(f"Final output shape: {outputs.size()}")  # 最終出力の形を表示
-    for key, value in intermediate_outputs.items():  # 各中間出力に対して
-        print(f"{key}: {value.size()}")  # 中間出力の形を表示
+    # for key, value in intermediate_outputs.items():  # 各中間出力に対して
+    #     print(f"{key}: {value.size()}")  # 中間出力の形を表示
 

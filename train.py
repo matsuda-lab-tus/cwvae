@@ -17,8 +17,6 @@ from loggers.checkpoint import (
     Checkpoint,
 )  # モデルのチェックポイントを扱うクラスをインポート
 
-
-
 # メイン関数の定義
 if __name__ == "__main__":  # スクリプトが直接実行された場合
     parser = (
@@ -92,8 +90,8 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
     # モデルの構築
     model_components = build_model(cfg)  # モデルを構築
     model = model_components["meta"]["model"]  # モデル本体を取得
-    encoder = model_components["training"]["encoder"]  # エンコーダを取得
-    decoder = model_components["training"]["decoder"]  # デコーダを取得
+    # encoder = model_components["training"]["encoder"]  # エンコーダを取得
+    # decoder = model_components["training"]["decoder"]  # デコーダを取得
 
     # トレーニングのセットアップ
     optimizer = torch.optim.Adam(
@@ -142,18 +140,33 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
             obs = obs.view(-1, 100, 3, 64, 64)  # バッチサイズを合わせるために形状を変換
 
             optimizer.zero_grad()  # 勾配をゼロにリセット
-            obs_encoded = encoder(obs)  # 入力データをエンコーダでエンコード
+            obs_encoded = model.encoder(obs)  # 入力データをエンコーダでエンコード
 
             outputs_bot, _, priors, posteriors = model.hierarchical_unroll(
                 obs_encoded
             )  # モデルを通して予測を行う
-            logging.info(model.decoder(outputs_bot))  # デコーダの出力を確認するために表示
-            obs_decoded = model.decoder(outputs_bot)[0]  # デコーダで予測を生成
 
-            # 形状を確認
-            logging.info(
-                f"obs shape: {obs.shape}, obs_decoded shape: {obs_decoded.shape}"
-            )  # 入力と出力の形状を表示
+            # posteriors の構造を確認
+            print(f"Type of posteriors: {type(posteriors)}")
+            print(f"Length of posteriors: {len(posteriors)}")
+            if isinstance(posteriors, list) and isinstance(posteriors[0], dict):
+                det_state = posteriors[0]["det_state"]  # shape: [50, 100, 800]
+                print(f"det_state type: {type(det_state)}")
+                print(f"det_state shape: {det_state.size()}")  # torch.Size([50, 100, 800])
+
+                # det_state をフラット化（batch_size * seq_len, feature_dim）
+                det_state_flat = det_state.view(-1, 800)  # shape: [5000, 800]
+                print(f"[DEBUG] Input to Decoder: {det_state_flat.shape}, min: {det_state_flat.min().item()}, max: {det_state_flat.max().item()}")
+
+                # デコーダーにdet_stateを渡す
+                obs_decoded = model.decoder(det_state_flat)  # タプルを返さないように修正
+                print(f"[DEBUG] After fc: {obs_decoded.shape}, min: {obs_decoded.min().item()}, max: {obs_decoded.max().item()}")
+
+                print(f"obs_decoded shape: {obs_decoded.shape}")  # 確認用プリント
+
+            else:
+                raise ValueError("posteriors の構造が想定と異なります。")
+
 
             # 損失の計算
             losses = model.compute_losses(  # 損失を計算
@@ -210,28 +223,44 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
                     val_obs_encoded
                 )
 
-                # デコーダで予測画像を生成
-                val_obs_decoded = model.decoder(outputs_bot)[0]  # 最初の要素を取得
+                # posteriorからdet_stateを取得
+                if isinstance(val_posteriors, list) and isinstance(val_posteriors[0], dict):
+                    val_det_state = val_posteriors[0]["det_state"]  # shape: [batch_size, seq_len, 800]
+                    # det_state をフラット化（batch_size * seq_len, feature_dim）
+                    val_det_state_flat = val_det_state.view(-1, val_det_state.size(-1))  # shape: [batch_size * seq_len, 800]
+
+                    # デコーダーにval_det_state_flatを渡す
+                    val_obs_decoded = model.decoder(val_det_state_flat)  # shape: [batch_size * seq_len, 3, 64, 64]
+                else:
+                    raise ValueError("val_posteriors の構造が想定と異なります。")
 
                 # 予測画像を保存
-                output_dir = os.path.join(
-                    exp_rootdir, f"val_outputs_epoch_{epoch + 1}"
-                )  # 保存先のディレクトリを設定
-                os.makedirs(output_dir, exist_ok=True)  # ディレクトリを作成
+                if batch_idx < 1:  # 最初の5バッチに対して
+                    output_dir = os.path.join(
+                        exp_rootdir, f"val_outputs_epoch_{epoch + 1}"
+                    )  # 保存先のディレクトリを設定
+                    os.makedirs(output_dir, exist_ok=True)  # ディレクトリを作成
 
-                # 画像を保存するためのループ
-                for i in range(val_obs_decoded.size(0)):  # 各画像に対して
-                    # 画像を保存
-                    img_path = os.path.join(
-                        output_dir,
-                        f"val_pred_{batch_idx * val_loader.batch_size + i}.png",
-                    )  # 保存先のパスを設定
-                    try:
-                        vutils.save_image(
-                            val_obs_decoded[i], img_path, normalize=True
-                        )  # 画像を保存
-                    except Exception as e:
-                        logging.ERROR(f"画像の保存中にエラーが発生しました: {e}")  # エラーメッセージを表示し、次の画像の保存に進む
+                    # `val_obs_decoded` を [batch_size, seq_len, 3, 64, 64] にリシェイプ
+                    seq_len = cfg["seq_len"]
+                    batch_size = val_det_state.size(0)
+                    val_obs_decoded_reshaped = val_obs_decoded.view(batch_size, seq_len, 3, 64, 64)
+
+                    for seq_idx in range(batch_size):  # 各シーケンスに対して
+                        # シーケンス内の画像をグリッドにまとめる
+                        grid = vutils.make_grid(
+                            val_obs_decoded_reshaped[seq_idx], nrow=10, normalize=True
+                        )  # 例えば、10列のグリッドにまとめる
+
+                        # 画像を保存
+                        img_path = os.path.join(
+                            output_dir,
+                            f"val_pred_epoch{epoch + 1}_seq{batch_idx * batch_size + seq_idx}.png",
+                        )  # 保存先のパスを設定
+                        try:
+                            vutils.save_image(grid, img_path)  # グリッド画像を保存
+                        except Exception as e:
+                            logging.error(f"画像の保存中にエラーが発生しました: {e}")  # エラーメッセージを表示し、次の画像の保存に進む
 
                 # 検証損失の計算
                 val_losses_dict = model.compute_losses(  # 検証損失を計算

@@ -10,9 +10,9 @@ class RSSMCell(
 ):  # nn.Module は、ニューラルネットワークの基本的な部品を表すPyTorchのクラス
     def __init__(
         self,
-        stoch_size,  # ランダムな部分のサイズ
-        deter_size,  # 決定的な部分のサイズ
-        embed_size,  # データを変換する際の埋め込みサイズ
+        stoch_size,  # ランダムな部分のサイズ # 100
+        deter_size,  # 決定的な部分のサイズ # 800
+        embed_size,  # データを変換する際の埋め込みサイズ # 800
         obs_embed_size,  # 観測データを埋め込むためのサイズ
         reset_states=False,  # 状態をリセットするかどうか
         min_stddev=0.0001,  # 標準偏差の最小値
@@ -20,8 +20,8 @@ class RSSMCell(
     ):
         super(RSSMCell, self).__init__()  # 親クラスを初期化
         # 各サイズをインスタンス変数に保存
-        self._state_size = stoch_size
-        self._detstate_size = deter_size
+        self._state_size = stoch_size # 100
+        self._detstate_size = deter_size # 800
         self._embed_size = embed_size
         self._obs_embed_size = obs_embed_size
         
@@ -36,17 +36,15 @@ class RSSMCell(
 
         # 事前分布（Prior）を計算するための全結合層
         self.prior_h1_dense = nn.Linear(
-            self._state_size + self._embed_size, self._embed_size
-        )  # 1層目
-        self.prior_h2_dense = nn.Linear(self._detstate_size, self._embed_size)  # 2層目
+            self._state_size * 2+ self._detstate_size, self._embed_size  # stoch + deter サイズに対応
+        )  # 1000→800
+        self.prior_h2_dense = nn.Linear(self._embed_size, self._embed_size)  # 2層目
         self.prior_mean_dense = nn.Linear(
-            self._embed_size, self._state_size
+            self._embed_size, stoch_size
         )  # 平均を計算する層
         self.prior_stddev_dense = nn.Linear(
-            self._embed_size, self._state_size
+            self._embed_size, stoch_size
         )  # 標準偏差を計算する層
-
-        # 観測入力のための埋め込み層観測データを埋め込む層（入力サイズは4096）
 
         # 事後分布（Posterior）を計算するための全結合層 koko
         self.posterior_h1_dense = nn.Linear(
@@ -54,11 +52,13 @@ class RSSMCell(
         )  # 1層目
         self.posterior_h2_dense = nn.Linear(self._embed_size, self._embed_size)  # 2層目
         self.posterior_mean_dense = nn.Linear(
-            self._embed_size, self._state_size
+            self._embed_size, stoch_size
         )  # 平均を計算する層
         self.posterior_stddev_dense = nn.Linear(
-            self._embed_size, self._state_size
+            self._embed_size, stoch_size
         )  # 標準偏差を計算する層
+        self.apply(self.init_weights)  # 重みを初期化
+        # print(f'prior_h1_dense weight size: {self.prior_h1_dense.weight.size()}')
 
     # 前の状態と新しい入力（観測データやコンテキスト）を使って事前分布を計算
     def forward(self, prev_out, inputs, use_observation):
@@ -76,6 +76,7 @@ class RSSMCell(
         # prev_outは辞書 {"state": ...} であると想定
         prev_state = prev_out["state"]  # 前の状態を取得
         context = inputs[1]  # コンテキストを取得
+        # print(context.size())
 
         # Contextのサイズを調整
         # if context.dim() == 3 and context.size(1) == 1:
@@ -107,16 +108,22 @@ class RSSMCell(
         Returns:
             dict: 事前分布の情報を含む辞書。
         """
-        # 前の状態とコンテキストを結合
-        inputs = torch.cat(
-            [prev_state["sample"], context], dim=-1
-        )  # [batch, 100 + 800]
+        # print(f'prev_state["sample"] size: {prev_state["sample"].size()}')  # 50*100
+        # print(f'context size: {context.size()}')  # 50*900
+
+        # 必要な状態とコンテキストを結合し、[batch, stoch_state + stoch_state + det_state] で入力サイズを作成
+        inputs = torch.cat([prev_state["sample"], context], dim=-1)
+        # print(f'inputs size after concatenation: {inputs.size()}')  # 50*1000
+        # print(f'prior_h1_dense weight size: {self.prior_h1_dense.weight.size()}')
+        # print(f'prior_h1_dense bias size: {self.prior_h1_dense.bias.size()}')
+
         hl = F.relu(self.prior_h1_dense(inputs))  # 1層目を通す
+        # print(f'hl size: {hl.size()}') # 50*800
+        # print(hl.size())
         # GRUCellに[batch, embed_size]のhlを渡す
         det_state = self._cell(hl, prev_state["det_state"])  # GRUセルを通して状態を更新
 
         hl = F.relu(self.prior_h2_dense(det_state))  # 2層目を通す
-
         mean = self.prior_mean_dense(hl)  # 平均を計算
         # 標準偏差を計算し、最小値を適用
         stddev = (
@@ -127,17 +134,18 @@ class RSSMCell(
             sample = mean
         else:
             sample = MultivariateNormal(mean, torch.diag_embed(stddev)).sample()  # サンプリングを行う
-
-
+            # ↑デコーダする前のサンプリング結果
+        
+        # print(f'prior sample size: {sample.size()}')  # 確認用
 
         return {
             "mean": mean,  # 事前分布の平均
             "stddev": stddev,  # 事前分布の標準偏差
             "sample": sample,  # 事前分布からのサンプリング結果
             "det_state": det_state,  # 決定的な状態
-            "output": torch.cat(
-                [sample, det_state], dim=-1
-            ),  # サンプリング結果と決定的な出力を結合
+            # "output": torch.cat(
+            #     [sample, det_state], dim=-1
+            # ),  # サンプリング結果と決定的な出力を結合
         }
 
     def _posterior(self, obs_inputs, det_state):
@@ -169,7 +177,8 @@ class RSSMCell(
             sample = mean
         else:
             sample = MultivariateNormal(mean, torch.diag_embed(stddev)).sample()  # サンプリングを行う
-
+        # print(sample.size())
+        # print(f'posterior sample size: {sample.size()}')  # 確認用
         return {
             "mean": mean,  # 事後分布の平均
             "stddev": stddev,  # 事後分布の標準偏差
@@ -201,6 +210,7 @@ class RSSMCell(
                     device
                 ),  # 決定的状態の初期状態
         }}
+    
 
     def init_weights(self, module):  # モデルが学習を始めやすいように重みを初期化
         """
@@ -210,22 +220,20 @@ class RSSMCell(
             module (nn.Module): 重みを初期化するモジュール。
         """
         if isinstance(module, nn.Linear):  # 線形層の場合
-            nn.init.kaiming_uniform_(
-                module.weight, nonlinearity="relu"
-            )  # Kaiming初期化
+            nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")  # Kaiming初期化
             if module.bias is not None:
                 nn.init.constant_(module.bias, 0)  # バイアスを0で初期化
+
         elif isinstance(module, nn.ConvTranspose2d):  # 転置畳み込み層の場合
-            nn.init.kaiming_uniform_(
-                module.weight, nonlinearity="relu"
-            )  # Kaiming初期化
+            nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")  # Kaiming初期化
             if module.bias is not None:
                 nn.init.constant_(module.bias, 0)  # バイアスを0で初期化
+
         elif isinstance(module, nn.GRUCell):  # GRUセルの場合
-            for name, param in module.named_parameters():  # 各パラメータを確認
-                if "weight" in name:
-                    nn.init.kaiming_uniform_(
-                        param, nonlinearity="relu"
-                    )  # Kaiming初期化
+            for name, param in module.named_parameters():
+                if "weight_ih" in name:  # 入力から隠れ層への重み
+                    nn.init.xavier_uniform_(param)  # Xavier初期化
+                elif "weight_hh" in name:  # 隠れ層から隠れ層への重み
+                    nn.init.orthogonal_(param)  # 正則化のためOrthogonal初期化
                 elif "bias" in name:
                     nn.init.constant_(param, 0)  # バイアスを0で初期化

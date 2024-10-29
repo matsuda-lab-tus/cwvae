@@ -88,31 +88,6 @@ class CWVAE(nn.Module):
             device
         )  # 隠れ状態から埋め込みを作成
 
-    def forward(self, obs):
-        """
-        観察データを受け取り、エンコード、階層的なアンロール、デコードを行う。
-        :param obs: 入力観察データ (batch_size, seq_len, channels, height, width)
-        :return: 再構成された観察データ、損失情報
-        """
-        # 観察データをエンコーダーでエンコード
-        obs_encoded = self.encoder(obs)
-
-        # 階層的にアンロールして予測を行う
-        outputs_bot, last_state_all_levels, priors, posteriors = (
-            self.hierarchical_unroll(obs_encoded)
-        )
-
-        # デコーダーで再構成された観察データを取得
-        obs_decoded = self.decoder(outputs_bot)[0]
-
-        # 損失を計算
-        losses = self.compute_losses(
-            obs=obs, obs_decoded=obs_decoded, priors=priors, posteriors=posteriors
-        )
-
-        # 再構成された観察データと損失を返す
-        return obs_decoded, losses
-
     # モデルの重みを初期化する関数です
     def init_weights(self, m):
         # 線形層の場合、重みをxavierの方法で初期化します
@@ -148,7 +123,7 @@ class CWVAE(nn.Module):
         context = torch.zeros(
             inputs[level_top].size(0),
             inputs[level_top].size(1),
-            self.cells[-1]._detstate_size,
+            self.cells[-1]._detstate_size + self.cells[-1]._state_size,
             device=inputs[level_top].device,
         )
     
@@ -193,8 +168,10 @@ class CWVAE(nn.Module):
             )
 
             last_state_all_levels.insert(0, posterior_last_step)  # 最後の状態を追加
-            context = posterior["det_state"]  # コンテキストを更新
-
+            # context = posterior["det_state"]  # コンテキストを更新
+            # 修正後
+            context = torch.cat([posterior["sample"], posterior["det_state"]], dim=-1)  # コンテキストを更新
+            # print("Updated context size:", context.size())
             prior_list.insert(0, prior)  # 予測を追加
             posterior_list.insert(0, posterior)  # 後方推定を追加
 
@@ -302,24 +279,34 @@ class CWVAE(nn.Module):
         return pre_posteriors, pre_priors, post_priors, outputs_bot_level
 
     # 観察されたデータ（サンプル）と予測されたデータの違いを計算するためのもの
+
     def _log_prob_obs(self, samples, mean, stddev):
         """
-        Returns the log probability of the observed samples under a normal distribution
-        defined by the mean and stddev.
+        Returns the log probability density of samples in the given distribution.
+        The last dim of the samples is taken as the one to sum over.
         """
-        # 正規分布を作成
-        mvn = dist.Normal(mean, stddev)
-        log_prob = mvn.log_prob(
-            samples
-        )  # 実際の画像が、この正規分布にどれくらい似ているかを計算
-        return log_prob.sum(dim=[-3, -2, -1])  # 各ピクセルのログ確率を合計して返す
+        # サンプルの最後の次元を平坦化
+        if samples.dim() > 3:  # チャネル次元が存在する場合
+            batch_size, seq_len = samples.shape[:2]
+            new_shape = (batch_size, seq_len, -1)  # 最後の次元を1次元に平坦化
+            samples = samples.view(new_shape)
+            mean = mean.view(new_shape)
+            if isinstance(stddev, torch.Tensor):
+                stddev = stddev.view(new_shape)
+        
+        # `Independent`と`Normal`を用いた分布の定義
+        dist_normal = dist.Independent(dist.Normal(mean, stddev), reinterpreted_batch_ndims=1)
+        log_prob = dist_normal.log_prob(samples)  # 各サンプルの対数尤度を計算
+        return log_prob
+
 
     # 2つの「ガウス分布（正規分布）」の間の違いを計算して、それを数値で表している
     def _gaussian_KLD(self, dist1, dist2):
-        # dist1の「平均」と「標準偏差」を使って、mvn1というガウス分布を作る
-        mvn1 = dist.Normal(dist1["mean"], dist1["stddev"])
-        # dist2の「平均」と「標準偏差」を使って、mvn2というガウス分布を作る
-        mvn2 = dist.Normal(dist2["mean"], dist2["stddev"])
+        # 対角共分散行列を持つ分布を作成
+        scale_tril1 = torch.diag_embed(dist1["stddev"])
+        scale_tril2 = torch.diag_embed(dist2["stddev"])
+        mvn1 = dist.MultivariateNormal(dist1["mean"], scale_tril=scale_tril1)
+        mvn2 = dist.MultivariateNormal(dist2["mean"], scale_tril=scale_tril2)
         # 計算したKLダイバージェンスを全部足し合わせる
         return dist.kl_divergence(mvn1, mvn2).sum(
             dim=-1
@@ -337,9 +324,10 @@ def manual_scan(cell, obs_inputs, context, reset_state, use_observation, initial
     for t in range(seq_len):  # 各タイムステップに対して
         inputs = (
             obs_inputs[:, t],  # 現在の観察入力
-            context[:, t],  # 現在のコンテキスト
+            context[:, t, :cell._state_size + cell._detstate_size],  # context のサイズを統一
             reset_state[:, t],  # 現在のリセット状態
         )
+        # print(f"context at step {t}: {context[:, t, :cell._state_size + cell._detstate_size].size()}")
         outputs = cell(prev_out, inputs, use_observation)  # セルに入力を渡す
         priors.append(outputs["out"][0])  # 予測を追加
         posteriors.append(outputs["out"][1])  # 後方推定を追加
@@ -363,15 +351,13 @@ def build_model(cfg, open_loop=True):
         levels=cfg["levels"],  # 階層の数
         tmp_abs_factor=cfg["tmp_abs_factor"],  # 時間の絶対的な因子
         state_sizes={
-            "stoch": cfg["cell_stoch_size"],
-            "deter": cfg["cell_deter_size"],
+            "stoch": cfg["cell_stoch_size"], # 100
+            "deter": cfg["cell_deter_size"], # 800
         },  # 状態のサイズ
-        embed_size=cfg["cell_embed_size"],  # 埋め込みサイズ
-        obs_embed_size=cfg["enc_dense_embed_size"],  # 観察の埋め込みサイズ
+        embed_size=cfg["cell_embed_size"],  # 埋め込みサイズ # 800
+        obs_embed_size=cfg["enc_dense_embed_size"],  # 観察の埋め込みサイズ # 1024
         enc_dense_layers=cfg["enc_dense_layers"],  # エンコーダーの密な層の数
-        enc_dense_embed_size=cfg[
-            "enc_dense_embed_size"
-        ],  # エンコーダーの埋め込みサイズ
+        enc_dense_embed_size=cfg["enc_dense_embed_size"],  # エンコーダーの埋め込みサイズ
         channels_mult=cfg["channels_mult"],  # チャンネルの倍率
         device=device,  # デバイスを設定
         cell_type=cfg["cell_type"],  # セルのタイプ
@@ -383,6 +369,7 @@ def build_model(cfg, open_loop=True):
     )  # モデルをデバイスに移動
 
     model.apply(model.init_weights)  # モデルの重みを初期化
+    # print(f'prior_h1_dense weight size: {self.prior_h1_dense.weight.size()}')
 
     # 初期観察データを作成
     obs = torch.zeros([cfg["batch_size"], cfg["seq_len"], cfg["channels"], 64, 64]).to(
@@ -400,7 +387,29 @@ def build_model(cfg, open_loop=True):
     outputs_bot, last_state_all_levels, priors, posteriors = model.hierarchical_unroll(
         obs_encoded
     )
-    obs_decoded = model.decoder(outputs_bot)[0]  # デコーダーでデコード
+
+    # posteriors の構造を確認
+    print(f"Type of posteriors: {type(posteriors)}")
+    print(f"Length of posteriors: {len(posteriors)}")
+    if isinstance(posteriors, list) and isinstance(posteriors[0], dict):
+        print(f"Keys in first posterior: {posteriors[0].keys()}")
+        # 例えば最上階層の det_state を取得
+        det_state = posteriors[0]["det_state"]  # shape: [50, 100, 800]
+        print(f"det_state type: {type(det_state)}")
+        print(f"det_state shape: {det_state.size()}")  # torch.Size([50, 100, 800])
+
+        # det_state をフラット化（batch_size * seq_len, feature_dim）
+        det_state_flat = det_state.view(-1, 800)  # shape: [5000, 800]
+        print(f"[DEBUG] Input to Decoder: {det_state_flat.shape}, min: {det_state_flat.min().item()}, max: {det_state_flat.max().item()}")
+
+        # デコーダーにdet_stateを渡す
+        obs_decoded = model.decoder(det_state_flat)  # タプルを返さないように修正
+        print(f"[DEBUG] After fc: {obs_decoded.shape}, min: {obs_decoded.min().item()}, max: {obs_decoded.max().item()}")
+
+        print(f"obs_decoded shape: {obs_decoded.shape}")  # 確認用プリント
+
+    else:
+        raise ValueError("posteriors の構造が想定と異なります。")
 
     # 損失を計算
     losses = model.compute_losses(
@@ -451,3 +460,29 @@ def build_model(cfg, open_loop=True):
         "meta": {"model": model},  # モデルのメタ情報
         "open_loop_obs_decoded": open_loop_obs_decoded,  # オープンループのデコード結果
     }
+
+
+# def forward(self, obs):
+#     """
+#     観察データを受け取り、エンコード、階層的なアンロール、デコードを行う。
+#     :param obs: 入力観察データ (batch_size, seq_len, channels, height, width)
+#     :return: 再構成された観察データ、損失情報
+#     """
+#     # 観察データをエンコーダーでエンコード
+#     obs_encoded = self.encoder(obs)
+
+#     # 階層的にアンロールして予測を行う
+#     outputs_bot, last_state_all_levels, priors, posteriors = (
+#         self.hierarchical_unroll(obs_encoded)
+#     )
+
+#     # デコーダーで再構成された観察データを取得
+#     obs_decoded = self.decoder(outputs_bot)[0]
+
+#     # 損失を計算
+#     losses = self.compute_losses(
+#         obs=obs, obs_decoded=obs_decoded, priors=priors, posteriors=posteriors
+#     )
+
+#     # 再構成された観察データと損失を返す
+#     return obs_decoded, losses
