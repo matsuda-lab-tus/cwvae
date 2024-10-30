@@ -118,6 +118,9 @@ class CWVAE(nn.Module):
                 use_observations
             ] * self._levels  # boolの場合、すべての階層に同じ値を設定
 
+        if initial_state is None:
+            initial_state = [None] * self._levels
+
         level_top = self._levels - 1  # 最上階層のインデックス
         # コンテキストの初期化
         context = torch.zeros(
@@ -126,7 +129,19 @@ class CWVAE(nn.Module):
             self.cells[-1]._detstate_size + self.cells[-1]._state_size,
             device=inputs[level_top].device,
         )
-    
+
+        # リセット状態の初期化
+        if level_top >= 1:
+            inputs_top_ = inputs[level_top - 1]
+            temp_zeros = torch.zeros(
+                inputs_top_.size(0), inputs_top_.size(1), 1, device=inputs_top_.device
+            )
+            temp_ones = torch.ones_like(temp_zeros)
+            _reset_state = torch.cat([temp_zeros, temp_ones], dim=-1)
+            _reset_state = _reset_state.view(inputs_top_.size(0), -1, 1)
+            _reset_state = _reset_state[:, :inputs_top_.size(1), :]
+        else:
+            _reset_state = None
 
         # 予測と後方推定を保存するリストを初期化
         prior_list = []  # 予測リスト
@@ -141,23 +156,33 @@ class CWVAE(nn.Module):
                 reset_state = torch.ones(
                     obs_inputs.size(0), obs_inputs.size(1), 1, device=obs_inputs.device
                 )
+                reset_state_next = _reset_state
             else:  # 下の階層の場合、リセット状態を展開
-                reset_state = (
-                    reset_state.unsqueeze(2)
-                    .repeat(1, 1, self._tmp_abs_factor, 1)
-                    .view(reset_state.size(0), -1, reset_state.size(-1))
-                )
-                context = (
-                    context.unsqueeze(2)
-                    .repeat(1, 1, self._tmp_abs_factor, 1)
-                    .view(context.size(0), -1, context.size(-1))
+                reset_state_next = reset_state
+                reset_state = reset_state.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
+                reset_state = reset_state.view(
+                    reset_state.size(0), -1, reset_state.size(-1)
                 )
 
+                context = context.unsqueeze(2).repeat(1, 1, self._tmp_abs_factor, 1)
+                context = context.view(context.size(0), -1, context.size(-1))
+
+            # 観測数に合わせてリセット状態とコンテキストを調整
+            reset_state = reset_state[:, :obs_inputs.size(1), :]
+            context = context[:, :obs_inputs.size(1), :]
+
+            # アクションをボトムレベルのコンテキストに追加
+            if level == 0 and actions is not None:
+                context = torch.cat([context, actions], dim=-1)
+
+            # 初期状態を設定
             initial = self.cells[level].zero_state(
                 obs_inputs.size(0), obs_inputs.device
-            )  # 初期状態を設定
-            # セルを使って予測を行う
+            )
+            if initial_state[level] is not None:
+                initial["state"] = initial_state[level]
 
+            # セルを使って予測を行う
             prior, posterior, posterior_last_step = manual_scan(
                 self.cells[level],  # 現在のセル
                 obs_inputs,  # 観察入力
@@ -168,10 +193,9 @@ class CWVAE(nn.Module):
             )
 
             last_state_all_levels.insert(0, posterior_last_step)  # 最後の状態を追加
-            # context = posterior["det_state"]  # コンテキストを更新
-            # 修正後
-            context = torch.cat([posterior["sample"], posterior["det_state"]], dim=-1)  # コンテキストを更新
-            # print("Updated context size:", context.size())
+            # contextを更新（sampleとdet_stateを結合）
+            context = torch.cat([posterior["sample"], posterior["det_state"]], dim=-1)
+
             prior_list.insert(0, prior)  # 予測を追加
             posterior_list.insert(0, posterior)  # 後方推定を追加
 

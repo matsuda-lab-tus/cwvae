@@ -185,7 +185,7 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
 
             # wandbに損失をログ
             wandb.log(
-                {"train_loss": loss.item(), "step": step, "epoch": epoch}
+                {"train_loss": loss.item(), "step": step, "epoch": epoch, "nll_term": losses["nll_term"].item(), "kl_term": losses["kl_term"].item()}
             )  # 損失をwandbに記録
 
             loss.backward()  # 損失の勾配を計算
@@ -281,7 +281,7 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
 
             average_val_loss = sum(val_losses) / len(val_losses)  # 平均検証損失を計算
             wandb.log(
-                {"val_loss": average_val_loss, "epoch": epoch}
+                {"val_loss": average_val_loss, "epoch": epoch, }
             )  # wandbに検証損失を記録
             model.train()  # モデルをトレーニングモードに戻す
 
@@ -315,5 +315,4 @@ if __name__ == "__main__":  # スクリプトが直接実行された場合
         {"training_duration": str(duration), "end_time": str(end_time)}
     )  # トレーニング時間を記録
     wandb.finish()  # wandbのログを終了
-
 
