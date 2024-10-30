@@ -5,235 +5,152 @@ from torch.distributions import MultivariateNormal  # 多変量正規分布を�
 
 
 # 「再帰型状態空間モデル（Recurrent State Space Model）」のセルを定義します
-class RSSMCell(
-    nn.Module
-):  # nn.Module は、ニューラルネットワークの基本的な部品を表すPyTorchのクラス
+class RSSMCell(nn.Module):
     def __init__(
         self,
-        stoch_size,  # ランダムな部分のサイズ # 100
-        deter_size,  # 決定的な部分のサイズ # 800
-        embed_size,  # データを変換する際の埋め込みサイズ # 800
-        obs_embed_size,  # 観測データを埋め込むためのサイズ
-        reset_states=False,  # 状態をリセットするかどうか
-        min_stddev=0.0001,  # 標準偏差の最小値
-        mean_only=False,  # 平均値だけを使うかどうか
+        state_size,
+        detstate_size,
+        embed_size,
+        reset_states=False,
+        min_stddev=0.0001,
+        mean_only=False,
+        var_scope="rssm_cell",
     ):
-        super(RSSMCell, self).__init__()  # 親クラスを初期化
-        # 各サイズをインスタンス変数に保存
-        self._state_size = stoch_size # 100
-        self._detstate_size = deter_size # 800
-        self._embed_size = embed_size
-        self._obs_embed_size = obs_embed_size
+        super(RSSMCell, self).__init__()
         
-        self._min_stddev = min_stddev  # 最小標準偏差を設定
-        self._mean_only = mean_only  # 平均のみを使用するかのフラグ
-        self._reset_states = reset_states  # 状態リセットのフラグ
+        # パラメータの設定
+        self._state_size = state_size
+        self._detstate_size = detstate_size
+        self._embed_size = embed_size
+        self._min_stddev = min_stddev
+        self._mean_only = mean_only
+        self._reset_states = reset_states
 
-        # 決定論的部分のためのGRUセルを定義
-        self._cell = nn.GRUCell(
-            input_size=self._embed_size, hidden_size=self._detstate_size
-        )  # GRUセルを作成
+        # GRUセルの定義
+        self._cell = nn.GRUCell(input_size=self._embed_size, hidden_size=self._detstate_size)
 
-        # 事前分布（Prior）を計算するための全結合層
-        self.prior_h1_dense = nn.Linear(
-            self._state_size * 2+ self._detstate_size, self._embed_size  # stoch + deter サイズに対応
-        )  # 1000→800
-        self.prior_h2_dense = nn.Linear(self._embed_size, self._embed_size)  # 2層目
-        self.prior_mean_dense = nn.Linear(
-            self._embed_size, stoch_size
-        )  # 平均を計算する層
-        self.prior_stddev_dense = nn.Linear(
-            self._embed_size, stoch_size
-        )  # 標準偏差を計算する層
+        # Prior用の全結合層の定義
+        self.prior_h1_dense = nn.Linear(self._state_size + self._detstate_size, self._embed_size)
+        self.prior_h2_dense = nn.Linear(self._embed_size, self._embed_size)
+        self.prior_mean_dense = nn.Linear(self._embed_size, self._state_size)
+        self.prior_stddev_dense = nn.Linear(self._embed_size, self._state_size)
 
-        # 事後分布（Posterior）を計算するための全結合層 koko
-        self.posterior_h1_dense = nn.Linear(
-            self._detstate_size + self._obs_embed_size, self._embed_size
-        )  # 1層目
-        self.posterior_h2_dense = nn.Linear(self._embed_size, self._embed_size)  # 2層目
-        self.posterior_mean_dense = nn.Linear(
-            self._embed_size, stoch_size
-        )  # 平均を計算する層
-        self.posterior_stddev_dense = nn.Linear(
-            self._embed_size, stoch_size
-        )  # 標準偏差を計算する層
-        self.apply(self.init_weights)  # 重みを初期化
-        # print(f'prior_h1_dense weight size: {self.prior_h1_dense.weight.size()}')
-
-    # 前の状態と新しい入力（観測データやコンテキスト）を使って事前分布を計算
-    def forward(self, prev_out, inputs, use_observation):
-        """
-        前の出力と現在の入力を受け取り、事前分布と事後分布を計算します。
-
-        Args:
-            prev_out (dict): 前の状態を含む辞書。キーは "state"。
-            inputs (list): 入力のリスト。inputs[0] は観測データ、inputs[1] はコンテキスト。
-            use_observation (bool): 観測を使用するかどうか。
-
-        Returns:
-            dict: 新しい状態と事前・事後分布の情報を含む辞書。
-        """
-        # prev_outは辞書 {"state": ...} であると想定
-        prev_state = prev_out["state"]  # 前の状態を取得
-        context = inputs[1]  # コンテキストを取得
-        # print(context.size())
-
-        # Contextのサイズを調整
-        # if context.dim() == 3 and context.size(1) == 1:
-        #     context = context.squeeze(1)  # [batch, context_size]に変形
-
-        # Prior（事前分布）の計算
-        prior = self._prior(prev_state, context)  # 事前分布を計算
-
-        # Posterior（事後分布）の計算
-        if use_observation:  # 観測データがあれば事後分布を計算
-            posterior = self._posterior(inputs[0], prior["det_state"])
-        else:
-            posterior = prior  # 観測がない場合は事前分布を使用
-
-        # 'state' に 'posterior' 全体を設定
-        return {
-            "out": [prior, posterior],
-            "state": posterior,
-        }  # 事前分布と事後分布を返す
+        # Posterior用の全結合層の定義
+        self.posterior_h1_dense = nn.Linear(self._detstate_size + self._embed_size, self._embed_size)
+        self.posterior_h2_dense = nn.Linear(self._embed_size, self._embed_size)
+        self.posterior_mean_dense = nn.Linear(self._embed_size, self._state_size)
+        self.posterior_stddev_dense = nn.Linear(self._embed_size, self._state_size)
 
     def _prior(self, prev_state, context):
         """
         事前分布を計算します。
-
-        Args:
-            prev_state (dict): 前の状態。キーは "sample" と "det_state"。
-            context (Tensor): コンテキスト情報。
-
-        Returns:
-            dict: 事前分布の情報を含む辞書。
         """
-        # print(f'prev_state["sample"] size: {prev_state["sample"].size()}')  # 50*100
-        # print(f'context size: {context.size()}')  # 50*900
-
-        # 必要な状態とコンテキストを結合し、[batch, stoch_state + stoch_state + det_state] で入力サイズを作成
+        # `prev_state["sample"]`と`context`を連結して入力とする
         inputs = torch.cat([prev_state["sample"], context], dim=-1)
-        # print(f'inputs size after concatenation: {inputs.size()}')  # 50*1000
-        # print(f'prior_h1_dense weight size: {self.prior_h1_dense.weight.size()}')
-        # print(f'prior_h1_dense bias size: {self.prior_h1_dense.bias.size()}')
 
-        hl = F.relu(self.prior_h1_dense(inputs))  # 1層目を通す
-        # print(f'hl size: {hl.size()}') # 50*800
-        # print(hl.size())
-        # GRUCellに[batch, embed_size]のhlを渡す
-        det_state = self._cell(hl, prev_state["det_state"])  # GRUセルを通して状態を更新
+        # 隠れ層1を通す
+        hl = F.relu(self.prior_h1_dense(inputs))
 
-        hl = F.relu(self.prior_h2_dense(det_state))  # 2層目を通す
-        mean = self.prior_mean_dense(hl)  # 平均を計算
-        # 標準偏差を計算し、最小値を適用
-        stddev = (
-            F.softplus(self.prior_stddev_dense(hl) + 0.54) + self._min_stddev
-        )  # [batch, state_size]
+        # GRUセルを使用してdet_outとdet_stateを計算
+        det_out = self._cell(hl, prev_state["det_state"])
+        det_state = det_out  # det_stateをdet_outに合わせて更新
 
-        if self._mean_only:  # 平均のみを使う場合
+        # det_outを次の隠れ層に入力
+        hl = F.relu(self.prior_h2_dense(det_out))
+
+        # 平均と標準偏差を計算
+        mean = self.prior_mean_dense(hl)
+        stddev = F.softplus(self.prior_stddev_dense(hl) + 0.54) + self._min_stddev
+
+        # 平均のみを使用する場合
+        if self._mean_only:
             sample = mean
         else:
-            sample = MultivariateNormal(mean, torch.diag_embed(stddev)).sample()  # サンプリングを行う
-            # ↑デコーダする前のサンプリング結果
-        
-        # print(f'prior sample size: {sample.size()}')  # 確認用
+            # PyTorchでのMultivariateNormalによるサンプリング
+            sample = MultivariateNormal(mean, torch.diag_embed(stddev)).sample()
 
+        # 結果をリターン
         return {
-            "mean": mean,  # 事前分布の平均
-            "stddev": stddev,  # 事前分布の標準偏差
-            "sample": sample,  # 事前分布からのサンプリング結果
-            "det_state": det_state,  # 決定的な状態
-            # "output": torch.cat(
-            #     [sample, det_state], dim=-1
-            # ),  # サンプリング結果と決定的な出力を結合
+            "mean": mean,
+            "stddev": stddev,
+            "sample": sample,
+            "det_out": det_out,
+            "det_state": det_state,
+            "output": torch.cat([sample, det_out], dim=-1),
         }
 
-    def _posterior(self, obs_inputs, det_state):
+
+    def _posterior(self, obs_inputs, prev_state, context):
         """
         事後分布を計算します。
-
-        Args:
-            obs_inputs (Tensor): 観測データの入力。
-            prior (dict): 事前分布の情報を含む辞書。
-            context (Tensor): コンテキスト情報。
-
-        Returns:
-            dict: 事後分布の情報を含む辞書。
         """
-
-        # Priorの決定論的出力と埋め込み観測データを結合
-        inputs = torch.cat(
-            [obs_inputs, det_state], dim=-1
-        )  # [batch, 800 + 800]
-        hl = F.relu(self.posterior_h1_dense(inputs))  # 1層目を通す
-        hl = F.relu(self.posterior_h2_dense(hl))  # 2層目を通す
-
-        mean = self.posterior_mean_dense(hl)  # 事後分布の平均を計算
-        stddev = (
-            F.softplus(self.posterior_stddev_dense(hl) + 0.54) + self._min_stddev
-        )  # 標準偏差を計算
-
-        if self._mean_only:  # 平均のみを使う場合
+        # 事前分布の計算
+        prior = self._prior(prev_state, context)
+        
+        # Posteriorの入力としてprior["det_out"]と観測入力を連結
+        inputs = torch.cat([prior["det_out"], obs_inputs], dim=-1)
+        
+        # 隠れ層を通す
+        hl = F.relu(self.posterior_h1_dense(inputs))
+        hl = F.relu(self.posterior_h2_dense(hl))
+        
+        # 平均と標準偏差の計算
+        mean = self.posterior_mean_dense(hl)
+        stddev = F.softplus(self.posterior_stddev_dense(hl) + 0.54) + self._min_stddev
+        
+        # 平均のみを使う場合
+        if self._mean_only:
             sample = mean
         else:
-            sample = MultivariateNormal(mean, torch.diag_embed(stddev)).sample()  # サンプリングを行う
-        # print(sample.size())
-        # print(f'posterior sample size: {sample.size()}')  # 確認用
+            sample = MultivariateNormal(mean, torch.diag_embed(stddev)).sample()
+
         return {
-            "mean": mean,  # 事後分布の平均
-            "stddev": stddev,  # 事後分布の標準偏差
-            "sample": sample,  # 事後分布からのサンプリング結果　stoch
-            "det_state": det_state,  # 決定的な状態
-            "output": torch.cat(
-                [sample, det_state], dim=-1
-            ),  # サンプリング結果と決定的な出力を結合
+            "mean": mean,
+            "stddev": stddev,
+            "sample": sample,
+            "det_out": prior["det_out"],
+            "det_state": prior["det_state"],
+            "output": torch.cat([sample, prior["det_out"]], dim=-1),
         }
 
-    def zero_state(self, batch_size, device):  # ゼロから始めるための初期状態を作成
+    def forward(self, prev_out, inputs, use_obs):
         """
-        初期状態をゼロで設定します。
+        前の出力と現在の入力を使って事前分布と事後分布を計算します。
+        """
+        prev_state = prev_out["state"]
+        obs_input, context, reset_state = inputs
 
-        Args:
-            batch_size (int): バッチサイズ。
-            device (torch.device): デバイス情報。
+        # 状態をリセットするかどうかをチェック
+        if not self._reset_states:
+            reset_state = torch.ones_like(reset_state)
+        prev_state["sample"] *= reset_state
 
-        Returns:
-            dict: 初期状態を含む辞書。
+        # Prior計算
+        prior = self._prior(prev_state, context)
+
+        # Posterior計算
+        if use_obs:
+            posterior = self._posterior(obs_input, prev_state, context)
+        else:
+            posterior = prior
+
+        return {"out": (prior, posterior), "state": posterior}
+
+    def zero_state(self, batch_size, device):
+        """
+        初期状態をゼロで設定し、stateキーを含む辞書として返す。
         """
         return {
-            "state": {  # 状態の初期値
+            "state": {
+                "sample": torch.zeros(batch_size, self._state_size, device=device),
+                "det_state": torch.zeros(batch_size, self._detstate_size, device=device),
+            }
+        }
 
-                "sample": torch.zeros(batch_size, self._state_size).to(
-                    device
-                ),  # サンプルの初期状態
-                "det_state": torch.zeros(batch_size, self._detstate_size).to(
-                    device
-                ),  # 決定的状態の初期状態
-        }}
-    
 
-    def init_weights(self, module):  # モデルが学習を始めやすいように重みを初期化
+    def zero_out_state(self, batch_size, device):
         """
-        モジュールの重みを初期化します。
-
-        Args:
-            module (nn.Module): 重みを初期化するモジュール。
+        zero_stateに基づき、アウトプット状態を初期化（先行研究に準拠）。
         """
-        if isinstance(module, nn.Linear):  # 線形層の場合
-            nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")  # Kaiming初期化
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)  # バイアスを0で初期化
-
-        elif isinstance(module, nn.ConvTranspose2d):  # 転置畳み込み層の場合
-            nn.init.kaiming_uniform_(module.weight, nonlinearity="relu")  # Kaiming初期化
-            if module.bias is not None:
-                nn.init.constant_(module.bias, 0)  # バイアスを0で初期化
-
-        elif isinstance(module, nn.GRUCell):  # GRUセルの場合
-            for name, param in module.named_parameters():
-                if "weight_ih" in name:  # 入力から隠れ層への重み
-                    nn.init.xavier_uniform_(param)  # Xavier初期化
-                elif "weight_hh" in name:  # 隠れ層から隠れ層への重み
-                    nn.init.orthogonal_(param)  # 正則化のためOrthogonal初期化
-                elif "bias" in name:
-                    nn.init.constant_(param, 0)  # バイアスを0で初期化
+        zero_st = self.zero_state(batch_size, device)
+        return {"out": (zero_st, zero_st), "state": zero_st}

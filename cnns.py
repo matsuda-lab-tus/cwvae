@@ -3,273 +3,171 @@ import torch.nn as nn  # ニューラルネットワークの基本機能を使�
 import torch.nn.functional as F  # ニューラルネットワークのための便利な関数を使います
 import math  # 数学的な計算をするためのライブラリ
 
-
-# エンコーダーのクラスを定義します
 class Encoder(nn.Module):
-    def __init__(
-        self, levels, tmp_abs_factor, obs_embed_size, dense_layers=3, embed_size=1024, channels_mult=1
-    ):
-        super(Encoder, self).__init__()  # 親クラスを初期化
-        self.levels = levels  # 階層の数を設定
-        self.tmp_abs_factor = tmp_abs_factor  # 時間の絶対的な因子を設定
-        self.activation = nn.LeakyReLU(
-            negative_slope=0.2
-        )  # 活性化関数をLeakyReLUに設定
-        self.channels_mult = channels_mult  # チャンネルの倍率を設定
-        self.dense_layers_num = dense_layers  # 密な層の数を設定
-        self.embed_size = embed_size  # 埋め込みサイズを設定
-        self.obs_embed_size = obs_embed_size
+    """
+    Multi-level Video Encoder.
+    """
 
-        # 畳み込み層を定義します
-        filters = 32  # フィルター数を設定
-        self.conv1 = nn.Conv2d(
-            in_channels=3,
-            out_channels=channels_mult * filters,
-            kernel_size=4,
-            stride=2,
-            # padding=1,
-        )  # 畳み込み層1
-        self.conv2 = nn.Conv2d(
+    def __init__(
+        self, levels, tmp_abs_factor, dense_layers=3, embed_size=1024, channels_mult=1
+    ):
+        super(Encoder, self).__init__()
+        self._levels = levels
+        self._tmp_abs_factor = tmp_abs_factor
+        self._dense_layers = dense_layers
+        self._embed_size = embed_size
+        self._channels_mult = channels_mult
+        self._activation = nn.LeakyReLU(negative_slope=0.2)
+
+        # Conv layers setup
+        filters = 32
+        self.h1_conv = nn.Conv2d(
+            in_channels=3, out_channels=channels_mult * filters, kernel_size=4, stride=2
+        )
+        self.h2_conv = nn.Conv2d(
             in_channels=channels_mult * filters,
             out_channels=channels_mult * filters * 2,
             kernel_size=4,
             stride=2,
-            # padding=1,
-        )  # 畳み込み層2
-        self.conv3 = nn.Conv2d(
+        )
+        self.h3_conv = nn.Conv2d(
             in_channels=channels_mult * filters * 2,
             out_channels=channels_mult * filters * 4,
             kernel_size=4,
             stride=2,
-            # padding=1,
-        )  # 畳み込み層3
-        self.conv4 = nn.Conv2d(
+        )
+        self.h4_conv = nn.Conv2d(
             in_channels=channels_mult * filters * 4,
             out_channels=channels_mult * filters * 8,
             kernel_size=4,
             stride=2,
-            # padding=1,
-        )  # 畳み込み層4
-        # 畳み込み後の出力サイズを計算
-        self.conv_output_size = channels_mult * filters * 8 * 4  # 出力サイズを調整
+        )
+        self.conv_output_size = channels_mult * filters * 8 * 4  # Calculated output size
 
-        # 各階層の全結合層を定義 後で直す
-        self.level_dense_layers = nn.ModuleList()  # モジュールリストを作成
-        for level in range(1, self.levels):  # 各階層に対して
-            level_layers = nn.ModuleList()  # 各階層の層を格納するリスト
-            in_features = self.obs_embed_size  # 入力サイズを設定
-            for _ in range(self.dense_layers_num - 1):  # 密な層の数だけループ
-                dense_layer = nn.Linear(in_features, self.embed_size)  # 全結合層を作成
-                level_layers.append(dense_layer)  # 層を追加
-                in_features = self.embed_size  # 次の層の入力サイズを更新
-            dense_layer = nn.Linear(
-                in_features, self.obs_embed_size
-            )  # 最後の全結合層を作成
-            level_layers.append(dense_layer)  # 最後の層を追加
-            self.level_dense_layers.append(level_layers)  # 各階層の層を保存
+        # Fully connected (dense) layers for each level
+        self.level_dense_layers = nn.ModuleList()
+        for level in range(1, self._levels):
+            level_layers = nn.ModuleList()
+            in_features = self.conv_output_size
+            for _ in range(self._dense_layers - 1):
+                dense_layer = nn.Linear(in_features, self._embed_size)
+                level_layers.append(dense_layer)
+                in_features = self._embed_size
+            dense_layer = nn.Linear(in_features, self.conv_output_size)
+            level_layers.append(dense_layer)
+            self.level_dense_layers.append(level_layers)
 
     def forward(self, obs):
-        # 入力のサイズを取得
+        # Reshape to combine batch and time dimensions for convolution
         batch_size, seq_len, channels, height, width = obs.size()
-        # 入力を適切な形に変形
         hidden = obs.reshape(batch_size * seq_len, channels, height, width)
-    
-        # 畳み込み層を通して処理します
-        hidden = self.activation(self.conv1(hidden))  # 畳み込み層1を通す
-        hidden = self.activation(self.conv2(hidden))  # 畳み込み層2を通す
-        hidden = self.activation(self.conv3(hidden))  # 畳み込み層3を通す
-        hidden = self.activation(self.conv4(hidden))  # 畳み込み層4を通す
 
-        hidden = hidden.flatten(start_dim=1)  # 畳み込み出力をフラットにする
-        hidden = hidden.view(*obs.size()[:2], hidden.size(-1))
-        layer = hidden  # 現在の層を設定
+        # Apply convolutional layers
+        hidden = self._activation(self.h1_conv(hidden))
+        hidden = self._activation(self.h2_conv(hidden))
+        hidden = self._activation(self.h3_conv(hidden))
+        hidden = self._activation(self.h4_conv(hidden))
 
-        layers = []  # 各階層の出力を保存するリスト
-        layers.append(layer)  # 最初の層を追加
-        # print(f"[DEBUG] Input shape at level 0: {layer.shape}")  # 入力の形を表示
+        hidden = hidden.flatten(start_dim=1)  # Flatten the conv output
+        hidden = hidden.view(batch_size, seq_len, -1)  # Reshape back to (B, T, :)
 
-        # 各階層ごとに全結合層を通します
-        for level in range(1, self.levels):
-            dense_layers = self.level_dense_layers[
-                level - 1
-            ]  # 現在の階層の密な層を取得
-            # hidden = layer  # 前の層の出力を設定
-            for dense_layer in dense_layers[:-1]:  # 最後の層以外に対してループ
-                hidden = F.relu(dense_layer(hidden))  # 活性化関数を通す
-            hidden = dense_layers[-1](hidden)  # 最後の層を通す
-          
+        layer = hidden  # Initialize current layer
+        layers = [layer]  # Collect output for each level
+        print(f"[DEBUG] Input shape at level 0: {layer.shape}")
 
-            layer = hidden  # 現在の層を更新
-            feat_size = layer.size(-1)  # 特徴サイズを取得
+        # Process each hierarchical level
+        for level in range(1, self._levels):
+            dense_layers = self.level_dense_layers[level - 1]
+            for dense_layer in dense_layers[:-1]:  # Apply all but last dense layer
+                layer = F.relu(dense_layer(layer))
+            layer = dense_layers[-1](layer)  # Apply last dense layer
 
-            # 時間ステップを統合します
-            timesteps_to_merge = self.tmp_abs_factor  # 統合する時間ステップ数
-            current_timesteps = layer.size(1)  # 現在の時間ステップ数
-            # 不足する時間ステップを計算
-            timesteps_to_pad = (
-                timesteps_to_merge - (current_timesteps % timesteps_to_merge)
-            ) % timesteps_to_merge
-            if timesteps_to_pad > 0:  # パディングが必要な場合
-                padding = torch.zeros(batch_size, timesteps_to_pad, feat_size).to(
-                    layer.device
-                )  # パディング用のゼロを作成
-                layer = torch.cat([layer, padding], dim=1)  # パディングを追加
-                # print(
-                #     f"[DEBUG] Padded {timesteps_to_pad} timesteps at level {level}"
-                # )  # パディングの情報を表示
+            # Temporal abstraction
+            timesteps_to_merge = self._tmp_abs_factor
+            timesteps_to_pad = (timesteps_to_merge - (layer.size(1) % timesteps_to_merge)) % timesteps_to_merge
+            if timesteps_to_pad > 0:
+                padding = torch.zeros(batch_size, timesteps_to_pad, layer.size(-1)).to(layer.device)
+                layer = torch.cat([layer, padding], dim=1)
+                print(f"[DEBUG] Padded {timesteps_to_pad} timesteps at level {level}")
 
-            # 時間ステップを統合
-            merged_timesteps = math.ceil(
-                layer.size(1) / timesteps_to_merge
-            )  # 統合された時間ステップ数
-            layer = layer.view(
-                batch_size, merged_timesteps, timesteps_to_merge, feat_size
-            )  # 形を変形
-            layer = layer.sum(dim=2)  # 時間ステップを統合
-            layers.append(layer)  # 現在の層を追加
-            # print(
-            #     f"[DEBUG] Input shape at level {level}: {layer.shape}"
-            # )  # 現在の層の形を表示
+            merged_timesteps = layer.size(1) // timesteps_to_merge
+            layer = layer.view(batch_size, merged_timesteps, timesteps_to_merge, -1).sum(dim=2)
+            layers.append(layer)  # Append current level's output
+            print(f"[DEBUG] Input shape at level {level}: {layer.shape}")
 
-        return layers  # 各階層の出力を返す
+        return layers
 
 
 # デコーダーのクラスを定義します
 class Decoder(nn.Module):
-    def __init__(
-        self, output_channels, embed_size, channels_mult=1, final_activation=None
-    ):
-        super(Decoder, self).__init__()  # 親クラスを初期化
-        self.embed_size = embed_size  # 埋め込みサイズを設定
-        self.output_channels = output_channels  # 出力チャンネル数を設定
-        self.channels_mult = channels_mult  # チャンネルの倍率を設定
+    """ States to Images Decoder """
 
-        # 全結合層を作成し、1024次元に変換
-        self.fc = nn.Linear(self.embed_size, 1024)  # 埋め込みサイズ800から1024への全結合層
+    def __init__(self, out_channels, channels_mult=1):
+        super(Decoder, self).__init__()
+        self._out_channels = out_channels  # 出力チャンネル数
+        self._channels_mult = channels_mult  # チャンネルの倍率
+        self._activation = nn.LeakyReLU(negative_slope=0.2)
+        self._out_activation = nn.Tanh()  # 出力層の活性化関数
 
-        # フィルター数を設定
+        # フィルターの数を定義
         filters = 32
 
-        # ConvTranspose2d の in_channels と out_channels を修正
-        self.deconv1 = nn.ConvTranspose2d(  # 畳み込み転置層1
+        # 畳み込み転置層を定義
+        self.h1_dense = nn.Linear(1024, self._channels_mult * 1024)  # 全結合層
+        self.h2_deconv = nn.ConvTranspose2d(
             in_channels=1024,
-            out_channels=self.channels_mult * filters * 4,  # 128
+            out_channels=self._channels_mult * filters * 4,  # 128
             kernel_size=5,
             stride=2,
-            # padding=1,
         )
-        self.deconv2 = nn.ConvTranspose2d(  # 畳み込み転置層2
-            in_channels=self.channels_mult * filters * 4,  # 128
-            out_channels=self.channels_mult * filters * 2,  # 64
+        self.h3_deconv = nn.ConvTranspose2d(
+            in_channels=self._channels_mult * filters * 4,  # 128
+            out_channels=self._channels_mult * filters * 2,  # 64
             kernel_size=5,
             stride=2,
-            # padding=1,
         )
-        self.deconv3 = nn.ConvTranspose2d(  # 畳み込み転置層3
-            in_channels=self.channels_mult * filters * 2,  # 64
-            out_channels=self.channels_mult * filters,  # 32
+        self.h4_deconv = nn.ConvTranspose2d(
+            in_channels=self._channels_mult * filters * 2,  # 64
+            out_channels=self._channels_mult * filters,  # 32
             kernel_size=6,
             stride=2,
-            # padding=1,
         )
-        self.deconv4 = nn.ConvTranspose2d(  # 畳み込み転置層4
-            in_channels=self.channels_mult * filters,  # 32
-            out_channels=output_channels,  # 16
+        self.out_deconv = nn.ConvTranspose2d(
+            in_channels=self._channels_mult * filters,  # 32
+            out_channels=self._out_channels,  # 出力チャンネル数
             kernel_size=6,
             stride=2,
-            # padding=2,
         )
-        # self.deconv5 = nn.ConvTranspose2d(  # 畳み込み転置層5
-        #     in_channels=self.channels_mult * filters // 2,  # 16
-        #     out_channels=output_channels,  # 出力チャネル数
-        #     kernel_size=6,
-        #     stride=2,
-        #     # padding=2,
-        # )
 
-        self.activation = nn.LeakyReLU(
-            negative_slope=0.2
-        )  # 活性化関数をLeakyReLUに設定
+    def forward(self, states):
+        batch_size, timesteps, feature_dim = states.size()
+        print(f"[DEBUG] Decoder input shape: {states.shape}")
 
-        # 最終的な活性化関数を設定
-        if final_activation is not None:
-            self.final_activation = final_activation
-        else:
-            self.final_activation = nn.Tanh()  # デフォルトはTanh
+        # 全結合層で入力を処理
+        hidden = self._activation(self.h1_dense(states))
+        hidden = hidden.view(-1, 1024, 1, 1)  # (B * T, 1024, 1, 1)
+        print(f"[DEBUG] After reshaping to (1x1): {hidden.shape}")
 
-    def forward(self, x):
-        # intermediate_outputs = {}  # 中間出力を保存する辞書
+        # 畳み込み転置層を通してアップサンプリング
+        hidden = self._activation(self.h2_deconv(hidden))
+        print(f"[DEBUG] After h2_deconv: {hidden.shape}")
+        
+        hidden = self._activation(self.h3_deconv(hidden))
+        print(f"[DEBUG] After h3_deconv: {hidden.shape}")
+        
+        hidden = self._activation(self.h4_deconv(hidden))
+        print(f"[DEBUG] After h4_deconv: {hidden.shape}")
 
-        print(f"[DEBUG] Decoder input shape: {x.shape}")  # デバッグ用プリント
+        # 出力層（最終の畳み込み転置層）
+        out = self._out_activation(self.out_deconv(hidden))
+        print(f"[DEBUG] After out_deconv (final layer): {out.shape}")
 
-        print(
-            f"[DEBUG] Input to Decoder: {x.shape}, min: {x.min()}, max: {x.max()}"
-        )  # 入力の形を表示
+        # 元の次元に戻す
+        out = out.view(batch_size, timesteps, self._out_channels, 64, 64)
+        print(f"[DEBUG] Final output shape: {out.shape}")
 
-        # 全結合層に通すために形を変更
-        # x = x.reshape(batch_size * timesteps, embed_size)  # 形を変更
-        # print(
-        #     f"[DEBUG] After reshaping for fc layer: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
+        return out
 
-        # 全結合層を通します
-        x = self.activation(self.fc(x))  # 活性化関数を通す
-        # intermediate_outputs["fc"] = x  # fc層の出力を保存
-        print(
-            f"[DEBUG] After fc: {x.shape}, min: {x.min()}, max: {x.max()}"
-        )  # 形の変化を表示
-
-        # 1x1のグリッドに変形します
-        x = x.view(-1, 1024, 1, 1)  # 形を変更
-        # intermediate_outputs["reshaped"] = x  # リシェイプ後の出力を保存
-        # print(
-        #     f"[DEBUG] After reshaping to 1x1: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
-
-        # 畳み込み転置層を通してアップサンプリングします
-        x = self.activation(self.deconv1(x))  # 畳み込み転置層1を通す
-        # intermediate_outputs["deconv1"] = x  # deconv1層の出力を保存
-        # print(
-        #     f"[DEBUG] After deconv1: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
-
-        x = self.activation(self.deconv2(x))  # 畳み込み転置層2を通す
-        # intermediate_outputs["deconv2"] = x  # deconv2層の出力を保存
-        # print(
-        #     f"[DEBUG] After deconv2: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
-
-        x = self.activation(self.deconv3(x))  # 畳み込み転置層3を通す
-        # intermediate_outputs["deconv3"] = x  # deconv3層の出力を保存
-        # print(
-        #     f"[DEBUG] After deconv3: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
-
-        x = self.activation(self.deconv4(x))  # 畳み込み転置層4を通す
-        # intermediate_outputs["deconv4"] = x  # deconv4層の出力を保存
-        # print(
-        #     f"[DEBUG] After deconv4: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
-
-        # x = self.deconv5(x)  # 最後の畳み込み転置層を通す
-        # intermediate_outputs["deconv5"] = x  # deconv5層の出力を保存
-        # print(
-        #     f"[DEBUG] After deconv5 (final layer): {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
-
-        x = self.final_activation(x)  # 最終的な活性化関数を通す
-        # intermediate_outputs["final_activation"] = x  # 最終活性化関数後の出力を保存
-        # print(
-        #     f"[DEBUG] After final activation ({self.final_activation.__class__.__name__}): {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 形の変化を表示
-
-        # 元の次元に戻します
-        # x = x.view(batch_size, timesteps, self.output_channels, 64, 64)  # 形を戻す
-        # print(
-        #     f"[DEBUG] Final output shape: {x.shape}, min: {x.min()}, max: {x.max()}"
-        # )  # 最終出力の形を表示
-
-        return x # 最終出力と中間出力を返す
 
 # if __name__ == "__main__": # モデルのインスタンスを作成
 #     encoder = Encoder(levels=3, tmp_abs_factor=6, dense_layers=3, embed_size=256, channels_mult=1)
@@ -294,4 +192,3 @@ class Decoder(nn.Module):
     # print(f"Final output shape: {outputs.size()}")  # 最終出力の形を表示
     # for key, value in intermediate_outputs.items():  # 各中間出力に対して
     #     print(f"{key}: {value.size()}")  # 中間出力の形を表示
-
